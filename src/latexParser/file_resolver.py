@@ -1,7 +1,9 @@
+import logging
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+logger = logging.getLogger(__name__)
 
 class LatexFileResolver:
     """
@@ -20,7 +22,7 @@ class LatexFileResolver:
 
     # Regex nhận diện \input{...}, \include{...}, \subfile{...} và cả cú pháp TeX cổ \input filename
     INCLUDE_PATTERN = re.compile(
-        r"\\(?:input|include|subfile)\s*(?:\{\s*([^}]+?)\s*\}|([^\s%{}]+))"
+        r"\\(?:input|include|subfile)(?![a-zA-Z])\s*(?:\{\s*([^}]+?)\s*\}|([^\s%{}]+))"
     )
 
     def __init__(self, strip_comments: bool = True):
@@ -146,7 +148,7 @@ class LatexFileResolver:
         return None
 
     def resolve_version(self, version_dir: Path) -> Dict[str, object]:
-        """
+        r"""
         Xử lý một thư mục version: tìm root file, đệ quy ghép toàn bộ \\input / \\include,
         và trả về văn bản LaTeX hợp nhất cùng thống kê các file đã dùng / bị bỏ qua.
 
@@ -157,6 +159,8 @@ class LatexFileResolver:
                 - compiled_tex (str): Toàn bộ nội dung LaTeX đã ghép nối theo nhánh biên dịch.
                 - included_files (List[str]): Danh sách các file .tex nằm trên nhánh biên dịch.
                 - ignored_files (List[str]): Danh sách các file .tex dư thừa bị loại bỏ.
+                - missing_files (List[str]): Các target \input/\include không tìm thấy file .tex
+                tương ứng (version có thể bị partial).
         """
         version_dir = Path(version_dir).resolve()
         all_tex_files = {p.resolve() for p in version_dir.rglob("*.tex")}
@@ -171,13 +175,15 @@ class LatexFileResolver:
                 "ignored_files": [
                     str(p.relative_to(version_dir)) for p in sorted(all_tex_files)
                 ],
+                "missing_files": [],
             }
 
         root_file = root_file.resolve()
         root_dir = root_file.parent
         visited_stack: Set[Path] = set()
         included_files_ordered: List[Path] = []
-
+        missing_files: List[str] = []
+        
         def _expand_file(file_path: Path) -> str:
             if file_path in visited_stack:
                 # Chặn đệ quy vòng (circular \input)
@@ -192,7 +198,7 @@ class LatexFileResolver:
             working_text = self.remove_comments(raw_text)
 
             def _replace_include(match: re.Match) -> str:
-                target = match.group(1) or match.group(2)
+                target = (match.group(1) or match.group(2)).strip()
                 resolved_child = self._resolve_target_path(
                     target, file_path.parent, root_dir
                 )
@@ -200,7 +206,16 @@ class LatexFileResolver:
                     child_content = _expand_file(resolved_child)
                     return f"\n{child_content}\n"
                 # Nếu không tìm thấy file .tex tương ứng (ví dụ \input{table.pstex_t} hoặc file thiếu),
-                # xóa lệnh \input đó để không làm bẩn văn bản
+                # cảnh báo và xóa lệnh \input đó để không làm bẩn văn bản
+                if target and target not in missing_files:
+                    missing_files.append(target)
+                    logger.warning(
+                        "Missing include '%s' referenced from '%s' in %s "
+                        "(version may be partial)",
+                        target,
+                        file_path.relative_to(version_dir),
+                        version_dir,
+                    )
                 return ""
 
             expanded_text = self.INCLUDE_PATTERN.sub(_replace_include, working_text)
@@ -221,4 +236,5 @@ class LatexFileResolver:
             "ignored_files": [
                 str(p.relative_to(version_dir)) for p in ignored_files
             ],
+            "missing_files": missing_files,
         }
