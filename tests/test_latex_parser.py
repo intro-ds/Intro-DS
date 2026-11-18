@@ -1,5 +1,39 @@
 from pathlib import Path
-from src.latexParser import LatexFileResolver, PublicationHierarchyBuilder
+from src.latexParser.file_resolver import LatexFileResolver
+from src.latexParser.structure_extractor import PublicationHierarchyBuilder
+
+
+def _assert_single_parent_per_version(builder: PublicationHierarchyBuilder) -> None:
+    element_ids = {row["element_id"] for row in builder.elements_rows}
+    edges_by_version_element = {}
+    for row in builder.hierarchy_rows:
+        key = (row["version"], row["element_id"])
+        edges_by_version_element.setdefault(key, []).append(row["parent_id"])
+
+    for parents in edges_by_version_element.values():
+        assert len(parents) == 1
+        assert len(set(parents)) == 1
+        assert parents[0] in element_ids
+
+    for version in {row["version"] for row in builder.hierarchy_rows}:
+        parent_by_element = {
+            row["element_id"]: row["parent_id"]
+            for row in builder.hierarchy_rows
+            if row["version"] == version
+        }
+        for element_id in parent_by_element:
+            path = set()
+            current = element_id
+            while current in parent_by_element:
+                assert current not in path
+                path.add(current)
+                current = parent_by_element[current]
+
+
+def _parse_document(body: str) -> PublicationHierarchyBuilder:
+    builder = PublicationHierarchyBuilder("2310.12345")
+    builder.parse_version(1, f"\\begin{{document}}{body}\\end{{document}}")
+    return builder
 
 
 def test_multi_file_and_deduplication(tmp_path: Path):
@@ -62,3 +96,97 @@ def test_multi_file_and_deduplication(tmp_path: Path):
     headings = [e["content"] for e in builder.elements_rows if e["kind"] == "heading"]
     assert "References" not in headings
     assert headings == ["Introduction", "Background and model"]
+    _assert_single_parent_per_version(builder)
+
+
+def test_repeated_sentence_in_different_sections_has_distinct_parents():
+    builder = _parse_document(
+        r"\section{First}The same sentence. "
+        r"\section{Second}The same sentence."
+    )
+
+    sentences = [
+        row for row in builder.elements_rows
+        if row["kind"] == "sentence" and row["content"] == "The same sentence."
+    ]
+    assert len(sentences) == 2
+    assert sentences[0]["element_id"] != sentences[1]["element_id"]
+
+    sentence_parents = {
+        row["element_id"]: row["parent_id"]
+        for row in builder.hierarchy_rows
+        if row["element_id"] in {sentence["element_id"] for sentence in sentences}
+    }
+    assert len(set(sentence_parents.values())) == 2
+    _assert_single_parent_per_version(builder)
+
+
+def test_duplicate_list_items_have_distinct_ids():
+    builder = _parse_document(
+        r"\section{Results}"
+        r"\begin{itemize}\item Same item.\item Same item.\end{itemize}"
+    )
+
+    items = [
+        row for row in builder.elements_rows
+        if row["kind"] == "item" and row["content"] == "Same item."
+    ]
+    assert len(items) == 2
+    assert items[0]["element_id"] != items[1]["element_id"]
+    _assert_single_parent_per_version(builder)
+
+
+def test_repeated_heading_title_does_not_create_self_parent():
+    builder = _parse_document(
+        r"\section{Results}Section text. "
+        r"\subsection{Results}Subsection text."
+    )
+
+    results_headings = [
+        row for row in builder.elements_rows
+        if row["kind"] == "heading" and row["content"] == "Results"
+    ]
+    assert len(results_headings) == 2
+    assert results_headings[0]["element_id"] != results_headings[1]["element_id"]
+
+    parents = {
+        row["element_id"]: row["parent_id"]
+        for row in builder.hierarchy_rows
+    }
+    assert parents[results_headings[1]["element_id"]] == results_headings[0]["element_id"]
+    assert all(element_id != parent_id for element_id, parent_id in parents.items())
+    _assert_single_parent_per_version(builder)
+
+
+def test_nested_itemize_preserves_nested_hierarchy():
+    builder = _parse_document(
+        r"\section{Results}"
+        r"\begin{itemize}"
+        r"\item Outer item. "
+        r"\begin{itemize}"
+        r"\item Inner one.\item Inner two."
+        r"\end{itemize}"
+        r"\item Outer second."
+        r"\end{itemize}"
+    )
+
+    lists = [row for row in builder.elements_rows if row["kind"] == "itemize"]
+    items = [row for row in builder.elements_rows if row["kind"] == "item"]
+    assert len(lists) == 2
+    assert len(items) == 4
+
+    parent_by_element = {
+        row["element_id"]: row["parent_id"]
+        for row in builder.hierarchy_rows
+    }
+    nested_list = next(
+        row for row in lists
+        if parent_by_element[row["element_id"]] in {item["element_id"] for item in items}
+    )
+    assert len(
+        [
+            item for item in items
+            if parent_by_element[item["element_id"]] == nested_list["element_id"]
+        ]
+    ) == 2
+    _assert_single_parent_per_version(builder)
