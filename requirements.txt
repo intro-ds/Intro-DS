@@ -7,3 +7,5 @@ sickle
 tqdm
 psutil
 pyarrow
+matplotlib
+seaborn

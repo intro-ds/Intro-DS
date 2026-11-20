@@ -227,5 +227,8 @@ data/raw/*
 data/interim/*
 !data/interim/.gitkeep
 
+data/intermediate/*
+!data/intermediate/.gitkeep
+
 data/processed/*
 !data/processed/.gitkeep

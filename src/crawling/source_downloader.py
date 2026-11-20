@@ -91,18 +91,39 @@ def _unpack_archive_bytes(data: bytes, dest_dir: Path) -> int:
     except tarfile.TarError:
         pass
 
-    # 2. Check if it is a single gzipped .tex or .bib file
+    # 2. Check if it is a single gzipped .tex or .bib file (not PDF)
     try:
         decompressed = gzip.decompress(data)
-        # Verify if decompressed content looks like text
+        if not decompressed.startswith(b"%PDF-"):
+            try:
+                text = decompressed.decode("utf-8", errors="replace")
+                if "\\documentclass" in text or "\\begin" in text or "@" in text:
+                    target_path = dest_dir / "main.tex"
+                    with target_path.open("w", encoding="utf-8") as out_f:
+                        out_f.write(text)
+                    stats_data = {
+                        "raw_uncompressed_bytes": len(decompressed),
+                        "clean_extracted_bytes": target_path.stat().st_size,
+                        "files_extracted": 1,
+                    }
+                    with (dest_dir / ".size_stats.json").open("w", encoding="utf-8") as sf:
+                        json.dump(stats_data, sf, indent=2)
+                    return 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 3. If raw bytes are plain LaTeX text (not PDF)
+    if not data.startswith(b"%PDF-"):
         try:
-            text = decompressed.decode("utf-8", errors="replace")
-            if "\\documentclass" in text or "\\begin" in text or "%" in text or "@" in text:
+            text = data.decode("utf-8", errors="replace")
+            if "\\documentclass" in text or "\\begin" in text or "@" in text:
                 target_path = dest_dir / "main.tex"
                 with target_path.open("w", encoding="utf-8") as out_f:
                     out_f.write(text)
                 stats_data = {
-                    "raw_uncompressed_bytes": len(decompressed),
+                    "raw_uncompressed_bytes": len(data),
                     "clean_extracted_bytes": target_path.stat().st_size,
                     "files_extracted": 1,
                 }
@@ -111,26 +132,6 @@ def _unpack_archive_bytes(data: bytes, dest_dir: Path) -> int:
                 return 1
         except Exception:
             pass
-    except Exception:
-        pass
-
-    # 3. If raw bytes are plain LaTeX text
-    try:
-        text = data.decode("utf-8", errors="replace")
-        if "\\documentclass" in text or "\\begin" in text or "@" in text:
-            target_path = dest_dir / "main.tex"
-            with target_path.open("w", encoding="utf-8") as out_f:
-                out_f.write(text)
-            stats_data = {
-                "raw_uncompressed_bytes": len(data),
-                "clean_extracted_bytes": target_path.stat().st_size,
-                "files_extracted": 1,
-            }
-            with (dest_dir / ".size_stats.json").open("w", encoding="utf-8") as sf:
-                json.dump(stats_data, sf, indent=2)
-            return 1
-    except Exception:
-        pass
 
     # Non-LaTeX source (e.g. PDF-only or unsupported format)
     (dest_dir / ".no_latex").touch()

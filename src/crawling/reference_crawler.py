@@ -227,7 +227,8 @@ def crawl_references_for_corpus(
     if checkpoint_file.exists():
         try:
             with checkpoint_file.open("r", encoding="utf-8") as f:
-                completed = set(json.load(f))
+                saved_ids = json.load(f)
+                completed = {aid for aid in saved_ids if (output_dir / aid / "refs.json").exists()}
         except Exception:
             completed = set()
 
@@ -238,7 +239,8 @@ def crawl_references_for_corpus(
     pbar = tqdm(arxiv_ids, desc="Crawling References (S2 API)", unit="paper")
 
     for aid in pbar:
-        if aid in completed or (output_dir / aid / "refs.json").exists():
+        refs_file = output_dir / aid / "refs.json"
+        if refs_file.exists():
             cached_count += 1
             completed.add(aid)
             pbar.set_postfix({"cached": cached_count, "new": crawled_count, "failed": failed_count})
