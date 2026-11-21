@@ -534,3 +534,33 @@ def test_build_tables_matches_milestone_one_schema(tmp_path, monkeypatch):
     assert [row["metadata_status"] for row in manifest_rows] == [
         "success", "success", "not_attempted"
     ]
+
+
+def test_paper_rows_combines_multiple_metadata_files(tmp_path):
+    first_metadata = tmp_path / "first.jsonl"
+    second_metadata = tmp_path / "second.jsonl"
+    first_metadata.write_text(
+        json.dumps({
+            "id": "2603.10580v1",
+            "title": "First paper",
+            "authors": ["First Author"],
+            "published": "2026-03-10T00:00:00+00:00",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    second_metadata.write_text(
+        json.dumps({
+            "id": "2602.16789v1",
+            "title": "Second paper",
+            "authors": ["Second Author"],
+            "published": "2026-02-10T00:00:00+00:00",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    rows = table_builder._paper_rows(
+        ["2603.10580", "2602.16789"],
+        [first_metadata, second_metadata],
+    )
+
+    assert [row["arxiv_id"] for row in rows] == ["2603.10580", "2602.16789"]

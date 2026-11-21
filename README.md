@@ -133,6 +133,40 @@ arXiv identifier, while all returned records remain in the raw JSON files. It
 also consolidates the per-stage logs into `data/processed/crawl_manifest.csv`
 for notebook coverage analysis.
 
+Run the automatic reference matcher over every paper ID in
+`config/aXirPaperID`. It writes one CSV per assigned ID, plus pool coverage and
+manual-label evaluation reports:
+
+```bash
+python -m src.matching.run_auto_label
+```
+
+By default, per-paper output and reports are written under
+`data/processed/labels/auto/<YYMM>/<paper-number>.csv`. For evaluation, place
+manual CSV files in
+`data/processed/labels/manual` or pass a CSV/directory with `--manual-labels`.
+Manual files use the columns `arxiv_id`, `reference_index`, `label`, and
+`matched_arxiv_id`; labels are `matched` or `no_match`, and matched rows must
+identify the correct `matched_arxiv_id`. When no manual labels are available,
+the evaluation report marks precision and recall as unavailable.
+If an assigned paper has no Semantic Scholar JSON yet, its CSV contains only
+the header; `coverage_report.csv` marks it as `missing_references`. This is
+distinct from `no_match`, which is only assigned to an actual reference entry
+that did not match a candidate.
+
+To build the candidate table from more than one member's metadata corpus, pass
+each JSONL input with a repeated `--metadata` option. For example:
+
+```powershell
+python -m src.crawling.build_tables `
+  --metadata data\raw\Hung\arxiv_metadata_2603_all_versions.jsonl `
+  --metadata data\raw\Nam\arxiv_metadata_2602_all_versions.jsonl
+```
+
+The matcher also reads DOI metadata from available member-level
+`arxiv_metadata_*_all_versions.jsonl` files when matching against the default
+candidate table.
+
 ## Data and Reproducibility
 
 The shared configuration records the arXiv ID ranges assigned to each group member. Large generated datasets should be stored separately when necessary. Data processing and output formats will be documented as the pipeline is finalized.
