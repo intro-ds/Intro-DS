@@ -1,4 +1,4 @@
-"""LaTeX parsing pipeline runner for Nguyen Thanh Toan (student ID: 24127590).
+"""LaTeX parsing pipeline runner for Doan The Viet (student ID: 24127590).
 
 Assigned range:
 
@@ -41,7 +41,7 @@ def run_pipeline(
     offset: int = 0,
     force: bool = False,
 ) -> None:
-    """Execute parsing stages for student 24127559.
+    """Execute parsing stages for student 24127590.
 
     Args:
         stage: Pipeline stage to execute ('all', 'parse', 'export').
