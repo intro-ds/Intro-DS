@@ -25,7 +25,7 @@ USER_AGENT = "IntroDS-Crawler/1.0 (HCMUS Group 13; 24127559@student.hcmus.edu.vn
 
 def _is_tex_or_bib_filename(name: str) -> bool:
     """Check if filename ends with .tex or .bib extension (case-insensitive)."""
-    return name.lower().endswith((".tex", ".bib"))
+    return name.lower().endswith((".tex", ".bib", ".bbl"))
 
 
 # Backward-compatible alias

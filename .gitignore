@@ -232,3 +232,5 @@ data/intermediate/*
 
 data/processed/*
 !data/processed/.gitkeep
+
+_build/

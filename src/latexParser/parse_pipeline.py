@@ -203,6 +203,18 @@ def parse_publication(
         for bf in version_dir.glob("*.bib"):
             bib_entries.extend(parse_bib_file(bf, filter_keys=cited_keys))
 
+                # Fallback: references that only exist as a compiled .bbl
+        if not bib_entries:
+            for bbl in version_dir.glob("*.bbl"):
+                try:
+                    bib_entries.extend(
+                        extract_bibitems_from_tex(
+                            bbl.read_text(encoding="utf-8", errors="replace")
+                        )
+                    )
+                except OSError:
+                    pass
+
         version_bibtex[v_num] = bib_entries
         version_meta[v_num] = {
             "parsed": True,
