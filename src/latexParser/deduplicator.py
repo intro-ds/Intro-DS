@@ -28,12 +28,11 @@ def deduplicate_elements(
 ) -> Tuple[List[Dict], List[Dict]]:
     """Deduplicate elements across versions of one publication.
 
-    Algorithm:
-    1. Flatten each version tree to a list of elements.
-    2. For each element, compute a content hash (kind + content, normalized).
-    3. If two elements from different versions share the same hash, assign the
-       earlier version's element_id to both.
-    4. Build hierarchy rows using the canonical element_ids.
+    Dedup key is (content hash, n) where n is the n-th occurrence of that content
+    inside the current version (reset for every version). This keeps the sharing
+    of identical elements across versions, while guaranteeing that two different
+    nodes of the same version never share an element_id, so every node has exactly
+    one parent per version.
 
     Args:
         version_trees: Mapping from version number to its root Element.
@@ -44,40 +43,38 @@ def deduplicate_elements(
             elements_rows: List of dicts for the elements table (deduplicated).
             hierarchy_rows: List of dicts for the hierarchy table (all versions).
     """
-    # Map: content_hash → canonical element_id
-    hash_to_id: Dict[str, str] = {}
-    # Map: original element_id → canonical element_id
+    key_to_id: Dict[Tuple[str, int], str] = {}
     id_remap: Dict[str, str] = {}
-    # Collect unique elements (by hash)
-    seen_hashes: Dict[str, Dict] = {}  # hash → element dict for the elements table
+    unique_rows: Dict[Tuple[str, int], Dict] = {}
 
-    # Process versions in order so lower version numbers get priority
+    # Lower version numbers are processed first so they own the shared element_id
     for version in sorted(version_trees.keys()):
-        root = version_trees[version]
-        all_elems = flatten_tree(root)
-        for elem in all_elems:
+        occurrence: Dict[str, int] = {}
+        for elem in flatten_tree(version_trees[version]):
             h = _content_hash(elem.kind, elem.content)
-            if h in hash_to_id:
-                # Duplicate — remap this element's id to the canonical one
-                id_remap[elem.element_id] = hash_to_id[h]
+            n = occurrence.get(h, 0)
+            occurrence[h] = n + 1
+            key = (h, n)
+
+            if key in key_to_id:
+                id_remap[elem.element_id] = key_to_id[key]
             else:
-                # New element
-                hash_to_id[h] = elem.element_id
+                key_to_id[key] = elem.element_id
                 id_remap[elem.element_id] = elem.element_id
-                seen_hashes[h] = {
+                unique_rows[key] = {
                     "element_id": elem.element_id,
                     "arxiv_id": arxiv_id,
                     "kind": elem.kind,
                     "content": elem.content,
                 }
 
-    elements_rows = list(seen_hashes.values())
+    elements_rows = list(unique_rows.values())
 
-    # Build hierarchy rows with remapped IDs
     hierarchy_rows: List[Dict] = []
     for version in sorted(version_trees.keys()):
-        root = version_trees[version]
-        raw_rows = tree_to_hierarchy_rows(root, arxiv_id, version, parent_id=None)
+        raw_rows = tree_to_hierarchy_rows(
+            version_trees[version], arxiv_id, version, parent_id=None
+        )
         for row in raw_rows:
             hierarchy_rows.append({
                 "arxiv_id": row["arxiv_id"],
