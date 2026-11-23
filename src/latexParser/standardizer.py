@@ -31,6 +31,17 @@ _ACCENT_MAP: Dict[str, str] = {
     r"\l": "ł", r"\L": "Ł",
 }
 
+# Accent commands: \'e, \'{e}, \"o, \~n ...
+_ACCENT_RE = re.compile(r"\\(['`^\"~])\s*\{?([A-Za-z])\}?")
+_CEDILLA_RE = re.compile(r"\\c\s*\{([cC])\}")
+# Letter-named commands (\ss, \ae, \o, \l ...) must not match a longer command
+_LETTER_MAP: Dict[str, str] = {
+    k[1:]: v for k, v in _ACCENT_MAP.items() if k[1:].isalpha()
+}
+_LETTER_RE = re.compile(
+    r"\\(" + "|".join(sorted(_LETTER_MAP, key=len, reverse=True)) + r")(?![A-Za-z])(?:\{\})?"
+)
+
 # LaTeX formatting commands that wrap an argument: \cmd{arg} → arg
 _FORMATTING_CMDS = (
     "textbf", "textit", "texttt", "textrm", "textsc", "textsf",
@@ -65,15 +76,17 @@ def strip_comments(source: str) -> str:
 # ---------------------------------------------------------------------------
 
 def expand_accents(text: str) -> str:
-    """Expand LaTeX accent commands to Unicode characters."""
-    # Handle braced forms: \'{e} → é
-    for cmd, char in _ACCENT_MAP.items():
-        # Braced form: \'{ x }
-        escaped = re.escape(cmd)
-        text = re.sub(escaped + r"\{(.)\}", char, text)
-        # Unbraced form: \'e
-        text = text.replace(cmd, char)
-    return text
+    """Expand LaTeX accent commands to Unicode characters.
+
+    Letter-named commands such as \\o or \\l are only expanded when they are
+    not the prefix of a longer command (e.g. \\label, \\linewidth, \\LaTeX).
+    """
+    text = _ACCENT_RE.sub(
+        lambda m: _ACCENT_MAP.get("\\" + m.group(1) + m.group(2), m.group(0)),
+        text,
+    )
+    text = _CEDILLA_RE.sub(lambda m: "ç" if m.group(1) == "c" else "Ç", text)
+    return _LETTER_RE.sub(lambda m: _LETTER_MAP[m.group(1)], text)
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +338,39 @@ def split_sentences(text: str) -> List[str]:
 # BibItem → BibTeX conversion
 # ---------------------------------------------------------------------------
 
+# revtex/apsrev .bbl entries wrap fields as \bibinfo {title} {...}
+_BIBNAME_RE = re.compile(
+    r"((?:\\bibfnamefont\s*\{[^{}]*\}(?:\s|~|\\ )*)+)\\bibnamefont\s*\{([^{}]*)\}"
+)
+
+
+def _parse_revtex_bibitem(raw_text: str) -> Dict[str, Any]:
+    """Extract title, journal, year and authors from a revtex-style bibitem."""
+    result: Dict[str, Any] = {}
+    if "\\bibinfo" not in raw_text:
+        return result
+
+    for field in ("title", "journal", "year"):
+        m = re.search(
+            r"\\bibinfo\s*\{" + field + r"\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}", raw_text
+        )
+        if m:
+            result[field] = clean_element_content(m.group(1), kind="sentence")
+
+    if "year" in result:
+        ym = re.search(r"\d{4}", result["year"])
+        result["year"] = int(ym.group(0)) if ym else None
+
+    authors: List[str] = []
+    for firsts, last in _BIBNAME_RE.findall(raw_text):
+        first_names = re.findall(r"\\bibfnamefont\s*\{([^{}]*)\}", firsts)
+        authors.append(
+            clean_element_content(" ".join(first_names) + " " + last, kind="sentence")
+        )
+    if authors:
+        result["authors"] = authors
+    return result
+
 def bibitem_to_bibtex(key: str, raw_text: str) -> Dict[str, Any]:
     """Convert a \\bibitem{key} raw text to a structured BibTeX record.
 
@@ -338,7 +384,8 @@ def bibitem_to_bibtex(key: str, raw_text: str) -> Dict[str, Any]:
         Dict with keys: citation_key, entry_type, title, authors, year, doi, journal, url.
     """
     cleaned = clean_element_content(raw_text, kind="sentence")
-
+    revtex = _parse_revtex_bibitem(raw_text)
+    
     # Year: 4-digit number in parentheses or at end
     year: Optional[int] = None
     year_match = re.search(r"\b(19|20)\d{2}\b", cleaned)
@@ -383,11 +430,11 @@ def bibitem_to_bibtex(key: str, raw_text: str) -> Dict[str, Any]:
     return {
         "citation_key": key,
         "entry_type": "article",
-        "title": title,
-        "authors": authors,
-        "year": year,
+        "title": revtex.get("title") or title,
+        "authors": revtex.get("authors") or authors,
+        "year": revtex.get("year") or year,
         "doi": doi,
-        "journal": journal,
+        "journal": revtex.get("journal") or journal,
         "url": url,
     }
 
@@ -395,7 +442,7 @@ def bibitem_to_bibtex(key: str, raw_text: str) -> Dict[str, Any]:
 def extract_bibitems_from_tex(tex_content: str) -> List[Dict[str, Any]]:
     """Extract all \\bibitem entries from a LaTeX document."""
     items: List[Dict[str, Any]] = []
-    pattern = re.compile(r"\\bibitem(?:\[[^\]]*\])?\{([^}]+)\}")
+    pattern = re.compile(r"\\bibitem\s*(?:\[(?:[^\[\]]|\[[^\]]*\])*\])?\s*\{([^}]+)\}")
     matches = list(pattern.finditer(tex_content))
     if not matches:
         return items

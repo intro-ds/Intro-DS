@@ -7,6 +7,7 @@ from src.latexParser.standardizer import (
     bibitem_to_bibtex,
     clean_element_content,
     expand_accents,
+    extract_bibitems_from_tex,
     extract_citation_keys,
     normalize_block_math,
     normalize_inline_math,
@@ -134,3 +135,35 @@ def test_parse_bib_file_large_filtering(tmp_path: Path) -> None:
     keys = {e["citation_key"] for e in entries}
     assert keys == {"key5", "key42"}
 
+def test_expand_accents_keeps_long_commands() -> None:
+    """Test that \\label, \\linewidth, \\LaTeX, \\orcidlink are not corrupted."""
+    raw = r"\label{sec:a} 0.9\linewidth \LaTeX{} \orcidlink{0000} Gro\ss{} \o{}"
+    out = expand_accents(raw)
+    assert r"\label{sec:a}" in out
+    assert r"\linewidth" in out
+    assert r"\LaTeX" in out
+    assert r"\orcidlink" in out
+    assert "Groß" in out
+    assert "ø" in out
+
+    cleaned = clean_element_content(r"Intro \label{sec:a} text.", kind="sentence")
+    assert "label" not in cleaned
+    assert "ł" not in cleaned
+
+def test_extract_bibitems_revtex_bbl() -> None:
+    """Test parsing revtex-style .bbl entries with a space before [label]."""
+    bbl = r"""
+    \begin{thebibliography}{2}
+    \bibitem [{\citenamefont {Foo}\ and\ \citenamefont {Bar}(2020)}]{foo2020}%
+      \BibitemOpen
+      \bibfield  {author} {\bibinfo {author} {\bibfnamefont {A.}~\bibnamefont {Foo}}\ and\ \bibinfo {author} {\bibfnamefont {B.}\ \bibfnamefont {C.}~\bibnamefont {Bar}},\ }\bibfield  {title} {\emph {\bibinfo {title} {Gravity channels}},\ }\href {x} {\bibfield  {journal} {\bibinfo  {journal} {Phys. Rev. Lett.}\ }\textbf {\bibinfo {volume} {1}},\ \bibinfo {pages} {1} (\bibinfo {year} {2020})}\BibitemShut {NoStop}%
+    \bibitem{plain1} A. Smith, Title, 2019.
+    \end{thebibliography}
+    """
+    entries = extract_bibitems_from_tex(bbl)
+    assert [e["citation_key"] for e in entries] == ["foo2020", "plain1"]
+    first = entries[0]
+    assert first["title"] == "Gravity channels"
+    assert first["year"] == 2020
+    assert first["journal"] == "Phys. Rev. Lett."
+    assert first["authors"] == ["A. Foo", "B. C. Bar"]

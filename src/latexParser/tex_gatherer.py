@@ -6,13 +6,15 @@ The compilation root is the .tex file containing the \\documentclass declaration
 
 import re
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 
 _DOCUMENTCLASS_RE = re.compile(r"\\documentclass\b")
-_COMMENT_LINE_RE = re.compile(r"(?m)^[ \t]*%.*$")
-_INLINE_COMMENT_RE = re.compile(r"(?<!\\)%.*$", re.MULTILINE)
+_BEGIN_DOC_RE = re.compile(r"\\begin\{document\}")
+_END_DOC_RE = re.compile(r"\\end\{document\}")
 _INPUT_RE = re.compile(r"\\(?:input|include|subfile)\{([^}]+)\}")
+# File stems that usually name the real entry point of a submission
+_ROOT_NAME_HINTS = {"main", "ms", "paper", "article", "root"}
 
 
 def _strip_comments(source: str) -> str:
@@ -24,13 +26,29 @@ def _strip_comments(source: str) -> str:
     return re.sub(r"(?<!\\)%[^\n]*", "", source)
 
 
-def find_root_tex(version_dir: Path) -> Optional[Path]:
-    """Return the .tex file containing \\documentclass (the compilation root).
+def _read_source(path: Path) -> Optional[str]:
+    """Read a .tex file as text, returning None for unreadable or binary files."""
+    try:
+        with path.open("rb") as bf:
+            header = bf.read(1024)
+        if header.startswith(b"%PDF-") or b"\x00" in header:
+            return None
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
-    Strategy:
-    1. Any .tex file that contains \\documentclass not on a commented line.
-    2. If multiple candidates, pick the one where \\documentclass appears earliest.
-    3. If none, return None.
+
+def find_root_tex(version_dir: Path) -> Optional[Path]:
+    """Return the .tex file that is the compilation root of a version.
+
+    Candidates are files with an uncommented \\documentclass (and, when any
+    exist, a \\begin{document}). Among candidates the best one is picked by:
+    1. Not being \\input/\\include'd by another file.
+    2. Hints that it is the real entry point: its stem matches a compiled
+       .bbl file (arXiv names the .bbl after the main file) or is a typical
+       name such as "main".
+    3. Having \\end{document}.
+    4. Being the largest file (templates and specimens are usually smaller).
 
     Args:
         version_dir: Path to the vN/ directory.
@@ -38,33 +56,34 @@ def find_root_tex(version_dir: Path) -> Optional[Path]:
     Returns:
         Path to the root .tex file, or None if not found.
     """
-    tex_files = sorted(version_dir.glob("*.tex"))
-    if not tex_files:
+    sources: Dict[Path, str] = {}
+    for tex_path in sorted(version_dir.glob("*.tex")):
+        text = _read_source(tex_path)
+        if text is not None:
+            sources[tex_path] = _strip_comments(text)
+
+    with_class = [p for p, s in sources.items() if _DOCUMENTCLASS_RE.search(s)]
+    if not with_class:
         return None
+    with_body = [p for p in with_class if _BEGIN_DOC_RE.search(sources[p])]
+    candidates = with_body or with_class
 
-    best_path: Optional[Path] = None
-    best_line = float("inf")
+    included_refs: Set[str] = set()
+    for text in sources.values():
+        for m in _INPUT_RE.finditer(text):
+            ref = Path(m.group(1).strip()).name
+            included_refs.add(ref)
+            included_refs.add(Path(ref).stem)
 
-    for tex_path in tex_files:
-        try:
-            with tex_path.open("rb") as bf:
-                header = bf.read(1024)
-            if header.startswith(b"%PDF-") or b"\x00" in header:
-                continue
-            source = tex_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+    bbl_stems = {p.stem for p in version_dir.glob("*.bbl")}
 
-        stripped = _strip_comments(source)
-        match = re.search(r"\\documentclass\b", stripped)
-        if match:
-            # Count how many newlines before the match = line number
-            line_num = stripped[: match.start()].count("\n")
-            if line_num < best_line:
-                best_line = line_num
-                best_path = tex_path
+    def _score(path: Path) -> tuple:
+        text = sources[path]
+        is_included = path.name in included_refs or path.stem in included_refs
+        hints = int(path.stem in bbl_stems) + int(path.stem.lower() in _ROOT_NAME_HINTS)
+        return (not is_included, hints, bool(_END_DOC_RE.search(text)), len(text))
 
-    return best_path
+    return max(candidates, key=_score)
 
 
 def _resolve_input(ref: str, version_dir: Path) -> Optional[Path]:
@@ -129,3 +148,44 @@ def gather_tex_files(root: Path, version_dir: Path) -> List[Path]:
 
     _walk(root)
     return result
+
+
+def expand_includes(tex_files: List[Path]) -> str:
+    """Return the source of the root file with \\input/\\include inlined in place.
+
+    The first item of tex_files is the root. Each \\input{x} / \\include{x}
+    command is replaced by the (comment-free) content of the matching file in
+    tex_files, so included text appears at the position LaTeX would place it.
+    Missing or circular includes are dropped.
+
+    Args:
+        tex_files: Ordered files of the compilation path (root first).
+
+    Returns:
+        Single source string with comments removed.
+    """
+    if not tex_files:
+        return ""
+
+    by_name: Dict[str, Path] = {}
+    for p in tex_files:
+        by_name[p.name] = p
+        by_name[p.stem] = p
+
+    def _expand(path: Path, stack: Set[Path]) -> str:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = _strip_comments(text)
+
+        def _sub(match: "re.Match[str]") -> str:
+            child = by_name.get(Path(match.group(1).strip()).name)
+            if child is None or child.resolve() in stack:
+                return ""
+            return "\n" + _expand(child, stack | {child.resolve()}) + "\n"
+
+        return _INPUT_RE.sub(_sub, text)
+
+    root = tex_files[0]
+    return _expand(root, {root.resolve()})

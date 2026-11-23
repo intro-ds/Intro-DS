@@ -156,3 +156,143 @@ def test_tree_to_hierarchy_rows(tmp_path: Path) -> None:
         assert r["version"] == 1
         assert "element_id" in r
         assert "parent_id" in r
+
+def test_build_hierarchy_nests_subsections(tmp_path: Path) -> None:
+    """Test that subsections are nested under their parent section."""
+    tex_file = tmp_path / "paper.tex"
+    tex_file.write_text(
+        r"""
+        \documentclass{article}
+        \begin{document}
+        \section{Methods}
+        Methods intro sentence.
+        \subsection{Data}
+        Data sentence.
+        \subsection{Model}
+        Model sentence.
+        \section{Results}
+        Results sentence.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    root = build_hierarchy([tex_file], "2512.00006", 1)
+    top = [c for c in root.children if c.kind == KIND_HEADING]
+    assert [h.content for h in top] == ["Methods", "Results"]
+
+    subs = [c for c in top[0].children if c.kind == KIND_HEADING]
+    assert [s.content for s in subs] == ["Data", "Model"]
+
+def test_build_hierarchy_keeps_appendix_after_references(tmp_path: Path) -> None:
+    """Test that appendices placed after the bibliography are still parsed."""
+    tex_file = tmp_path / "paper.tex"
+    tex_file.write_text(
+        r"""
+        \documentclass{article}
+        \begin{document}
+        \section{Introduction}
+        Intro.
+        \begin{thebibliography}{9}
+        \bibitem{a} Ref A.
+        \end{thebibliography}
+        \appendix
+        \section{Proof}
+        Proof sentence.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    root = build_hierarchy([tex_file], "2512.00007", 1)
+    all_elems = flatten_tree(root)
+    headings = [e.content for e in all_elems if e.kind == KIND_HEADING]
+    assert "Proof" in headings
+    assert not any("Ref A" in e.content for e in all_elems)
+
+
+def test_build_hierarchy_drops_references_section_keeps_next(tmp_path: Path) -> None:
+    """Test that a References section is dropped but a following appendix is kept."""
+    tex_file = tmp_path / "paper.tex"
+    tex_file.write_text(
+        r"""
+        \documentclass{article}
+        \begin{document}
+        \section{Introduction}
+        Intro.
+        \section{References}
+        \bibitem{a} Ref A
+        \appendix
+        \section{Extra}
+        Extra sentence.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    root = build_hierarchy([tex_file], "2512.00008", 1)
+    headings = [e.content for e in flatten_tree(root) if e.kind == KIND_HEADING]
+    assert "References" not in headings
+    assert "Extra" in headings
+
+def test_build_hierarchy_ids_unique_across_versions(tmp_path: Path) -> None:
+    """Test that element IDs never collide between versions of one paper."""
+    tex_file = tmp_path / "paper.tex"
+    tex_file.write_text(
+        r"""
+        \documentclass{article}
+        \begin{document}
+        \section{Intro}
+        A sentence.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    root_v1 = build_hierarchy([tex_file], "2512.00009", 1)
+    root_v2 = build_hierarchy([tex_file], "2512.00009", 2)
+    ids_v1 = {e.element_id for e in flatten_tree(root_v1)}
+    ids_v2 = {e.element_id for e in flatten_tree(root_v2)}
+    assert ids_v1.isdisjoint(ids_v2)
+    assert root_v1.content != root_v2.content
+
+def test_build_hierarchy_expands_input_files(tmp_path: Path) -> None:
+    """Test that content of \\input files is parsed in the document body."""
+    main = tmp_path / "main.tex"
+    main.write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\input{intro}\n\\end{document}",
+        encoding="utf-8",
+    )
+    intro = tmp_path / "intro.tex"
+    intro.write_text("\\section{Introduction}\nIntro sentence here.", encoding="utf-8")
+
+    root = build_hierarchy([main, intro], "2512.00010", 1)
+    all_elems = flatten_tree(root)
+    headings = [e.content for e in all_elems if e.kind == KIND_HEADING]
+    sentences = [e.content for e in all_elems if e.kind == KIND_SENTENCE]
+    assert "Introduction" in headings
+    assert any("Intro sentence here" in s for s in sentences)
+    assert not any("intro.tex" in s for s in sentences)
+
+
+def test_build_hierarchy_ignores_definitions_in_body(tmp_path: Path) -> None:
+    """Test that \\newcommand and similar definitions do not become sentences."""
+    tex_file = tmp_path / "paper.tex"
+    tex_file.write_text(
+        r"""
+        \documentclass{article}
+        \begin{document}
+        \newcommand{\ours}{OurMethod}
+        \DeclareMathOperator{\argmax}{arg\,max}
+        \section{Intro}
+        Real sentence.
+        \end{document}
+        """,
+        encoding="utf-8",
+    )
+
+    root = build_hierarchy([tex_file], "2512.00011", 1)
+    contents = " ".join(e.content for e in flatten_tree(root))
+    assert "OurMethod" not in contents
+    assert "argmax" not in contents
+    assert "Real sentence" in contents

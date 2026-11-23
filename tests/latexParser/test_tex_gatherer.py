@@ -3,7 +3,11 @@
 from pathlib import Path
 import pytest
 
-from src.latexParser.tex_gatherer import find_root_tex, gather_tex_files
+from src.latexParser.tex_gatherer import (
+    expand_includes,
+    find_root_tex,
+    gather_tex_files,
+)
 
 
 def test_find_root_tex_by_documentclass(tmp_path: Path) -> None:
@@ -93,3 +97,47 @@ def test_find_root_tex_ignores_pdf_or_binary(tmp_path: Path) -> None:
 
     assert find_root_tex(tmp_path) is None
 
+def test_find_root_tex_prefers_file_matching_bbl(tmp_path: Path) -> None:
+    """Test that the file whose stem matches a compiled .bbl beats a template."""
+    doc = "\\documentclass{article}\n\\begin{document}\nBODY\n\\end{document}"
+    (tmp_path / "elsdoc.tex").write_text(doc.replace("BODY", "Template text"), encoding="utf-8")
+    (tmp_path / "paper_v2.tex").write_text(doc.replace("BODY", "Real " * 50), encoding="utf-8")
+    (tmp_path / "paper_v2_highlight.tex").write_text(doc.replace("BODY", "Real " * 50), encoding="utf-8")
+    (tmp_path / "paper_v2_highlight.bbl").write_text("\\begin{thebibliography}{1}", encoding="utf-8")
+    assert find_root_tex(tmp_path).name == "paper_v2_highlight.tex"
+
+
+def test_find_root_tex_prefers_main_over_larger_supplement(tmp_path: Path) -> None:
+    """Test that main.tex wins over a larger supplement document."""
+    doc = "\\documentclass{article}\n\\begin{document}\nBODY\n\\end{document}"
+    (tmp_path / "main.tex").write_text(doc.replace("BODY", "Body"), encoding="utf-8")
+    (tmp_path / "supplement.tex").write_text(doc.replace("BODY", "Supplement " * 100), encoding="utf-8")
+    assert find_root_tex(tmp_path).name == "main.tex"
+
+
+def test_find_root_tex_skips_included_candidate(tmp_path: Path) -> None:
+    """Test that a file included by another candidate is not chosen as root."""
+    (tmp_path / "a.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\input{b}\n\\end{document}",
+        encoding="utf-8",
+    )
+    (tmp_path / "b.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n" + "x " * 200 + "\n\\end{document}",
+        encoding="utf-8",
+    )
+    assert find_root_tex(tmp_path).name == "a.tex"
+
+
+def test_expand_includes_inlines_in_place(tmp_path: Path) -> None:
+    """Test that \\input content appears at the position of the command."""
+    main = tmp_path / "main.tex"
+    main.write_text(
+        "\\documentclass{article}\n\\begin{document}\nBefore.\n\\input{intro.tex}\n"
+        "% \\input{ghost}\nAfter.\n\\end{document}",
+        encoding="utf-8",
+    )
+    intro = tmp_path / "intro.tex"
+    intro.write_text("\\section{Introduction}\nInside intro. % note\n\\input{main}", encoding="utf-8")
+    out = expand_includes([main, intro])
+    assert out.index("Before.") < out.index("Inside intro.") < out.index("After.")
+    assert "\\input" not in out and "note" not in out

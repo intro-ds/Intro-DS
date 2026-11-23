@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from src.latexParser.standardizer import clean_element_content, split_sentences, strip_comments
-
+from src.latexParser.tex_gatherer import expand_includes
 
 # ---------------------------------------------------------------------------
 # Element kinds
@@ -43,7 +43,7 @@ HEADING_CMDS: List[Tuple[str, int]] = [
     ("subparagraph", 6),
 ]
 
-
+HEADING_LEVELS: Dict[str, int] = dict(HEADING_CMDS)
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -75,8 +75,8 @@ class Element:
 class _IdGen:
     """Generates sequential element IDs of the form '<arxiv_id>#<seq>'."""
 
-    def __init__(self, arxiv_id: str) -> None:
-        self._prefix = arxiv_id.replace(".", "-") + "#"
+    def __init__(self, arxiv_id: str, version: int) -> None:
+        self._prefix = f"{arxiv_id.replace('.', '-')}#v{version}-"
         self._counter = 0
 
     def next(self) -> str:
@@ -156,11 +156,141 @@ _LIST_END_RE = re.compile(r"\\end\{(?:itemize|enumerate|description)\}")
 _ITEM_RE = re.compile(r"\\item\b")
 
 # References section markers
+# References section markers
+# Matches e.g. \section{References}, \section*{Bibliography}, \chapter{References}
 _REFS_SECTION_RE = re.compile(
-    r"\\(?:section|section\*)\{[^}]*(?:References?|Bibliography|Bibliograph)[^}]*\}",
+    r"\\(?:chapter|section)\*?\s*\{[^}]*(?:References?|Bibliography)[^}]*\}",
     re.IGNORECASE,
 )
-_BIBLIO_CMDS = re.compile(r"\\bibliography\{|\\begin\{thebibliography\}")
+# Next structural boundary after a references section
+_SECTION_BOUNDARY_RE = re.compile(r"\\(?:chapter|section|appendix)\b")
+_THEBIBLIOGRAPHY_RE = re.compile(
+    r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}", re.DOTALL
+)
+_BIBLIOGRAPHY_CMD_RE = re.compile(r"\\bibliography(?:style)?\s*\{[^}]*\}")
+
+def _remove_bibliography(body: str) -> str:
+    """Remove bibliography content without dropping sections that follow it.
+
+    Appendices frequently appear after the references, so the body must not be
+    truncated at the bibliography.
+    """
+    # 1. Drop a References/Bibliography section up to the next section or \appendix
+    while True:
+        refs_match = _REFS_SECTION_RE.search(body)
+        if refs_match is None:
+            break
+        boundary = _SECTION_BOUNDARY_RE.search(body, refs_match.end())
+        end = boundary.start() if boundary else len(body)
+        body = body[: refs_match.start()] + body[end:]
+
+    # 2. Drop explicit thebibliography environments
+    body = _THEBIBLIOGRAPHY_RE.sub("", body)
+
+    # 3. Drop \bibliography{...} and \bibliographystyle{...}
+    return _BIBLIOGRAPHY_CMD_RE.sub("", body)
+
+# Commands that only define macros or load packages and carry no content.
+# Value = number of mandatory arguments to drop.
+_DEF_CMDS: Dict[str, int] = {
+    "newcommand": 2, "renewcommand": 2, "providecommand": 2,
+    "DeclareRobustCommand": 2, "DeclareMathOperator": 2,
+    "newtheorem": 2, "newenvironment": 3, "renewenvironment": 3,
+    "usepackage": 1, "RequirePackage": 1, "newcounter": 1,
+    "setlength": 2, "setcounter": 2, "addtolength": 2,
+    "graphicspath": 1, "hypersetup": 1,
+    "pagestyle": 1, "thispagestyle": 1, "bibliographystyle": 1,
+}
+_DEF_RE = re.compile(
+    r"\\(" + "|".join(sorted(_DEF_CMDS, key=len, reverse=True)) + r")\*?(?![A-Za-z@])"
+)
+_DEF_PRIMITIVE_RE = re.compile(r"\\(?:def|gdef|edef|xdef)\s*\\[A-Za-z@]+")
+_CONTROL_SEQ_RE = re.compile(r"\\(?:[A-Za-z@]+|.)")
+
+
+def _match_group(text: str, start: int, open_ch: str, close_ch: str) -> int:
+    """Return the index after the group opening at start, or -1 if unbalanced."""
+    depth = 0
+    i = start
+    while i < len(text):
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == open_ch:
+            depth += 1
+        elif c == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _skip_args(text: str, pos: int, count: int) -> int:
+    """Skip `count` mandatory arguments (plus optional [..] ones) from pos."""
+    taken = 0
+    while taken < count:
+        p = pos
+        while p < len(text) and text[p] in " \t\r\n":
+            p += 1
+        if p >= len(text):
+            return pos
+        ch = text[p]
+        if ch == "[":
+            end = _match_group(text, p, "[", "]")
+        elif ch == "{":
+            end = _match_group(text, p, "{", "}")
+            taken += 1
+        elif ch == "\\":
+            m = _CONTROL_SEQ_RE.match(text, p)
+            end = m.end() if m else -1
+            taken += 1
+        else:
+            return pos
+        if end < 0:
+            return pos
+        pos = end
+    return pos
+
+
+def _skip_optional(text: str, pos: int) -> int:
+    """Skip one optional [..] group (e.g. the [section] of \\newtheorem)."""
+    p = pos
+    while p < len(text) and text[p] in " \t":
+        p += 1
+    if p < len(text) and text[p] == "[":
+        end = _match_group(text, p, "[", "]")
+        if end > 0:
+            return end
+    return pos
+
+
+def _strip_definitions(source: str) -> str:
+    """Remove macro definitions and package commands from the body source."""
+    out: List[str] = []
+    pos = 0
+    while True:
+        m1 = _DEF_RE.search(source, pos)
+        m2 = _DEF_PRIMITIVE_RE.search(source, pos)
+        found = [m for m in (m1, m2) if m]
+        if not found:
+            break
+        m = min(found, key=lambda x: x.start())
+        if m is m1:
+            end = _skip_args(source, m.end(), _DEF_CMDS[m.group(1)])
+            if m.group(1) == "newtheorem":
+                end = _skip_optional(source, end)
+        else:
+            brace = source.find("{", m.end())
+            end = m.end()
+            if brace != -1 and re.fullmatch(r"[#\d\s]*", source[m.end():brace]):
+                close = _match_group(source, brace, "{", "}")
+                end = close if close > 0 else m.end()
+        out.append(source[pos:m.start()])
+        pos = end
+    out.append(source[pos:])
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -183,16 +313,10 @@ def build_hierarchy(
     Returns:
         Root Element with kind=document.
     """
-    id_gen = _IdGen(arxiv_id)
+    id_gen = _IdGen(arxiv_id, version)
 
-    # Concatenate all source files
-    parts: List[str] = []
-    for tex_path in tex_files:
-        try:
-            parts.append(tex_path.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            pass
-    full_source = "\n".join(parts)
+    # Inline \input/\include so included text sits where LaTeX would place it
+    full_source = expand_includes(tex_files)
 
     # Strip comments for structural parsing
     source = strip_comments(full_source)
@@ -201,19 +325,19 @@ def build_hierarchy(
     body_match = re.search(r"\\begin\{document\}(.*?)\\end\{document\}", source, re.DOTALL)
     body = body_match.group(1) if body_match else source
 
-    # Truncate at References section
-    refs_match = _REFS_SECTION_RE.search(body)
-    biblio_match = _BIBLIO_CMDS.search(body)
-    truncate_at = len(body)
-    if refs_match:
-        truncate_at = min(truncate_at, refs_match.start())
-    if biblio_match:
-        truncate_at = min(truncate_at, biblio_match.start())
-    body = body[:truncate_at]
-
+    
+    body = _remove_bibliography(body)
+    # Drop macro definitions / package commands that leaked into the body
+    body = _strip_definitions(body)
+    
     # Create document root
     root_id = id_gen.next()
-    root = Element(element_id=root_id, kind=KIND_DOCUMENT, content=arxiv_id, children=[])
+    root = Element(
+        element_id=root_id,
+        kind=KIND_DOCUMENT,
+        content=f"{arxiv_id}v{version}",
+        children=[],
+    )
 
     # Parse the body into a flat list of tokens, then build the tree
     _parse_body(body, root, id_gen, arxiv_id)
@@ -229,6 +353,7 @@ def _parse_body(source: str, parent: Element, id_gen: _IdGen, arxiv_id: str) -> 
     pos = 0
     text_buffer = ""
     current_section: Optional[Element] = None  # the most recent heading element
+    heading_stack: List[Tuple[int, Element]] = []
 
     def _flush_text(buf: str, target: Element) -> None:
         """Split buffered prose into sentences and append to target."""
@@ -268,7 +393,13 @@ def _parse_body(source: str, parent: Element, id_gen: _IdGen, arxiv_id: str) -> 
                 content=heading_text,
                 children=[],
             )
-            parent.children.append(heading_elem)
+            # Nest the heading under the closest open heading of a higher level
+            level = HEADING_LEVELS[cmd_name]
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_parent = heading_stack[-1][1] if heading_stack else parent
+            heading_parent.children.append(heading_elem)
+            heading_stack.append((level, heading_elem))
             current_section = heading_elem
             pos = end_pos
             continue

@@ -38,7 +38,7 @@ def _get_ram_usage_mb() -> float:
 
 
 def run_pipeline(stage: str = "all", limit: int = 0, offset: int = 0) -> None:
-    """Execute crawling stages for student 24127559.
+    """Execute crawling stages for student 24127590.
 
     Args:
         stage: Which stage to execute ('all', 'discover', 'download', 'references', 'export').
