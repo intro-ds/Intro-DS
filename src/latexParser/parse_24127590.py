@@ -1,6 +1,6 @@
 """LaTeX parsing pipeline runner for Doan The Viet (student ID: 24127590).
 
-Assigned range:
+Assigned range: 2025-11, IDs 16709 to 21708 (2511.16709 to 2511.21708).
 
 Usage:
     python -m src.latexParser.parse_24127590 [--stage STAGE] [--offset OFFSET] [--limit LIMIT] [--force]
