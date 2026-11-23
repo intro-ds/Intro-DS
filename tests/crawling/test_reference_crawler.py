@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import urllib.error
 
 from src.crawling.reference_crawler import (
+    S2RateLimiter,
     _parse_reference_item,
     crawl_references_for_corpus,
     fetch_paper_references,
@@ -106,3 +107,35 @@ def test_crawl_references_for_corpus_checkpoint(tmp_path: Path) -> None:
     assert summary["cached"] == 1
     assert summary["crawled"] == 0
     assert (tmp_path / ".refs_checkpoint.json").exists()
+
+def test_fetch_paper_references_retries_on_503() -> None:
+    """Test that transient 5xx errors are retried instead of failing immediately."""
+    http_err = urllib.error.HTTPError(
+        url="http://test",
+        code=503,
+        msg="Service Unavailable",
+        hdrs={},  # type: ignore
+        fp=io.BytesIO(b""),
+    )
+    ok_resp = MagicMock()
+    ok_resp.__enter__.return_value = ok_resp
+    ok_resp.read.return_value = json.dumps(
+        {"paperId": "s2_paper_1", "references": []}
+    ).encode("utf-8")
+
+    with patch("urllib.request.urlopen", side_effect=[http_err, ok_resp]), patch(
+        "src.crawling.reference_crawler.time.sleep"
+    ):
+        res = fetch_paper_references("2512.03231", api_key="dummy_key")
+
+    assert res is not None
+    assert res["s2_paper_id"] == "s2_paper_1"
+
+
+def test_rate_limiter_spaces_requests() -> None:
+    """Test that the second request is delayed by the minimum interval."""
+    limiter = S2RateLimiter(min_interval=1.0)
+    with patch("src.crawling.reference_crawler.time.sleep") as mock_sleep:
+        limiter.wait()
+        limiter.wait()
+    assert mock_sleep.called

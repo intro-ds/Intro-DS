@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import pytest
+import re
 
 from src.latexParser.standardizer import (
     _split_authors,
@@ -208,3 +209,96 @@ def test_split_authors_formats() -> None:
     """Test the two common author-list formats."""
     assert _split_authors("A. B. Foo, C. Bar, and D. Baz") == ["A. B. Foo", "C. Bar", "D. Baz"]
     assert _split_authors("Foo, A. B. and Bar, C.") == ["A. B. Foo", "C. Bar"]
+
+def test_bibitem_plain_style_doi_and_year() -> None:
+    """Test a plain-style entry without \\newblock: DOI and year are still found."""
+    raw = "J. Smith. Title of paper. Journal of Things, 12(3):45--67, 2019. doi:10.1000/xyz123"
+    e = bibitem_to_bibtex("smith2019", raw)
+    assert e["doi"] == "10.1000/xyz123"
+    assert e["year"] == 2019
+    assert e["entry_type"] == "article"
+
+
+def test_bibitem_url_command() -> None:
+    """Test that a \\url{...} link is kept and not mistaken for the year."""
+    raw = (
+        "D. Kingma and J. Ba. Adam: A method for stochastic optimization. "
+        "\\url{https://arxiv.org/abs/1412.6980}, 2014."
+    )
+    e = bibitem_to_bibtex("adam", raw)
+    assert e["url"] == "https://arxiv.org/abs/1412.6980"
+    assert e["year"] == 2014
+
+
+def test_extract_bibitems_with_optional_label() -> None:
+    """Test \\bibitem[label]{key} with \\newblock-separated fields."""
+    tex = (
+        "\\begin{thebibliography}{1}\n"
+        "\\bibitem[Smith et al.(2020)]{smith2020} J. Smith.\n"
+        "\\newblock Great title.\n"
+        "\\newblock Nature, 2020.\n"
+        "\\end{thebibliography}"
+    )
+    entries = extract_bibitems_from_tex(tex)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["citation_key"] == "smith2020"
+    assert e["title"] == "Great title"
+    assert e["authors"] == ["J. Smith"]
+    assert e["year"] == 2020
+    assert e["journal"] == "Nature"
+
+
+def test_bibitem_without_structure_does_not_crash() -> None:
+    """Test that an unstructured entry yields empty fields instead of an error."""
+    e = bibitem_to_bibtex("web1", "Some website.")
+    assert e["title"] is None
+    assert e["year"] is None
+    assert e["authors"] == []
+    assert e["entry_type"] == "misc"
+
+
+def test_parse_bib_file_inproceedings_and_misc(tmp_path: Path) -> None:
+    """Test .bib with quoted values, nested braces, bare year, booktitle and url."""
+    bib = tmp_path / "refs.bib"
+    bib.write_text(
+        """
+@inproceedings{vaswani2017,
+  author = "Ashish Vaswani and Noam Shazeer",
+  title = {Attention Is {All} You Need},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year = 2017
+}
+@misc{adam,
+  author = {Diederik Kingma and Jimmy Ba},
+  title = {Adam},
+  year = {2014},
+  url = {https://arxiv.org/abs/1412.6980}
+}
+""",
+        encoding="utf-8",
+    )
+    entries = parse_bib_file(bib)
+    assert [e["citation_key"] for e in entries] == ["vaswani2017", "adam"]
+
+    first, second = entries
+    assert first["entry_type"] == "inproceedings"
+    assert first["title"] == "Attention Is All You Need"
+    assert first["authors"] == ["Ashish Vaswani", "Noam Shazeer"]
+    assert first["year"] == 2017
+    assert first["journal"] == "Advances in Neural Information Processing Systems"
+
+    assert second["entry_type"] == "misc"
+    assert second["journal"] is None
+    assert second["url"] == "https://arxiv.org/abs/1412.6980"
+
+
+def test_extract_bibitems_real_bbl_fixture() -> None:
+    """Test a real .bbl excerpt: one entry per \\bibitem and most have a title."""
+    fixture = Path(__file__).parent / "fixtures" / "sample.bbl"
+    text = fixture.read_text(encoding="utf-8", errors="replace")
+    entries = extract_bibitems_from_tex(text)
+    assert len(entries) == len(re.findall(r"\\bibitem\b", text))
+    assert len(entries) >= 5
+    assert all(e["citation_key"] for e in entries)
+    assert sum(bool(e["authors"]) and bool(e["year"]) for e in entries) / len(entries) >= 0.8
