@@ -371,67 +371,147 @@ def _parse_revtex_bibitem(raw_text: str) -> Dict[str, Any]:
         result["authors"] = authors
     return result
 
+_NEWBLOCK_RE = re.compile(r"\\newblock\b")
+# "A.", "A. B.", "F" ... (given-name initials only)
+_INITIALS_ONLY_RE = re.compile(r"^(?:[A-Z][a-z]?\.?[\s\-~]*){1,4}$")
+# Things that must not be mistaken for a publication year
+_URL_DOI_ARXIV_RE = re.compile(
+    r"https?://\S+|\b10\.\d{4,}/\S+|arxiv[:\s]*\d{4}\.\d{4,5}(?:v\d+)?",
+    re.IGNORECASE,
+)
+_ARXIV_ID_RE = re.compile(
+    r"(?:arxiv[:\s/]*(?:abs/)?|abs/)(\d{4}\.\d{4,5})(?:v\d+)?", re.IGNORECASE
+)
+
+
+def _split_authors(text: str) -> List[str]:
+    """Split an author string into individual names.
+
+    Handles "A. B. Last, C. Last, and D. Last" and "Last, F., Last, G., and Last, H.".
+    A comma-separated list is read as "Last, Initials" pairs only when every
+    second token consists of initials; otherwise each token is one author.
+    """
+    text = re.sub(r"\bet\s+al\.?", "", text, flags=re.IGNORECASE)
+    # Strip separators but keep the final period of an initial such as "C."
+    text = text.strip(" ,;(")
+    if text.endswith(".") and not re.search(r"(?:^|[\s\-~])[A-Z][a-z]?\.$", text):
+        text = text[:-1]
+    
+    pieces = re.split(r"\s*,?\s+and\s+|\s*&\s*", text)
+    authors: List[str] = []
+    for piece in pieces:
+        toks = [t.strip() for t in piece.split(",") if t.strip()]
+        if (
+            len(toks) >= 2
+            and len(toks) % 2 == 0
+            and all(_INITIALS_ONLY_RE.match(toks[i]) for i in range(1, len(toks), 2))
+        ):
+            authors += [f"{toks[i + 1]} {toks[i]}" for i in range(0, len(toks), 2)]
+        else:
+            authors += toks
+    return [a for a in authors if len(a) > 2]
+
+
+def _infer_entry_type(cleaned: str, venue: Optional[str]) -> str:
+    """Guess the BibTeX entry type.
+
+    Rules, first match wins:
+    1. mentions arXiv or "preprint"                    -> misc
+    2. venue starts with "In" or mentions proceedings,
+       conference, workshop, symposium                 -> inproceedings
+    3. mentions journal, transactions, Rev., Lett.     -> article
+    4. mentions ISBN, press, publisher, Springer, Wiley -> book
+    5. otherwise                                        -> misc
+    """
+    low = cleaned.lower()
+    if re.search(r"arxiv|preprint", low):
+        return "misc"
+    if (venue and re.match(r"in\b", venue, re.IGNORECASE)) or re.search(
+        r"proceedings|proc\.|conference|workshop|symposium", low
+    ):
+        return "inproceedings"
+    if re.search(r"journal|transactions|trans\.|rev\.|lett\.|letters", low):
+        return "article"
+    if re.search(r"isbn|\bpress\b|publisher|springer|wiley", low):
+        return "book"
+    return "misc"
+
 def bibitem_to_bibtex(key: str, raw_text: str) -> Dict[str, Any]:
     """Convert a \\bibitem{key} raw text to a structured BibTeX record.
 
-    Uses heuristic regex patterns to extract title, authors, year, journal, doi, url.
-
-    Args:
-        key: The citation key from \\bibitem{key}.
-        raw_text: The cleaned raw text that follows the \\bibitem command.
-
-    Returns:
-        Dict with keys: citation_key, entry_type, title, authors, year, doi, journal, url.
+    Strategy, first applicable wins:
+    1. revtex/apsrev \\bibinfo fields.
+    2. natbib/plain style split by \\newblock: authors / title / venue.
+    3. Quoted title: authors before the quote, venue after it.
+    4. APA style "Authors (2017). Title. Venue.".
+    5. Fallback: authors are everything before the year.
+    The entry type is guessed by _infer_entry_type.
     """
-    cleaned = clean_element_content(raw_text, kind="sentence")
     revtex = _parse_revtex_bibitem(raw_text)
-    
-    # Year: 4-digit number in parentheses or at end
-    year: Optional[int] = None
-    year_match = re.search(r"\b(19|20)\d{2}\b", cleaned)
-    if year_match:
-        year = int(year_match.group(0))
+    cleaned = clean_element_content(raw_text, kind="sentence")
 
-    # Title: text in quotes or after last comma block before year
-    title: Optional[str] = None
-    title_match = re.search(r'["\u201c]([^"\u201d]{5,})["\u201d]', cleaned)
-    if title_match:
-        title = title_match.group(1).strip()
+    # Split by \newblock BEFORE cleaning, because cleaning deletes \newblock
+    blocks = [
+        clean_element_content(b, kind="sentence").strip(" .,\n")
+        for b in _NEWBLOCK_RE.split(raw_text)
+    ]
+    blocks = [b for b in blocks if b]
 
-    # DOI
+    scrub = _URL_DOI_ARXIV_RE.sub(" ", cleaned)
+    year_match = re.search(r"\b(?:19|20)\d{2}\b", scrub)
+    year: Optional[int] = int(year_match.group(0)) if year_match else None
+
     doi: Optional[str] = None
     doi_match = re.search(r"\b10\.\d{4,}/\S+", cleaned)
     if doi_match:
         doi = doi_match.group(0).rstrip(".,)")
 
-    # URL
     url: Optional[str] = None
     url_match = re.search(r"https?://\S+", raw_text)
     if url_match:
-        url = url_match.group(0).rstrip(".,)")
+        url = url_match.group(0).rstrip(".,)}")
+    if url is None:
+        arxiv_match = _ARXIV_ID_RE.search(cleaned)
+        if arxiv_match:
+            url = f"https://arxiv.org/abs/{arxiv_match.group(1)}"
 
-    # Authors: everything before the year or title (heuristic)
-    authors: List[str] = []
-    if year_match:
-        before_year = cleaned[: year_match.start()].strip().rstrip(",. ")
-        # Split by " and " or ", "
-        raw_authors = re.split(r"\s+and\s+|,\s*", before_year)
-        authors = [a.strip() for a in raw_authors if len(a.strip()) > 2]
+    title: Optional[str] = None
+    authors_text = ""
+    venue: Optional[str] = None
+    title_match = re.search(r'["\u201c]([^"\u201d]{5,})["\u201d]', cleaned)
 
-    # Journal: italicised text or text after the year
+    if len(blocks) >= 2:
+        authors_text, title = blocks[0], blocks[1]
+        venue = blocks[2] if len(blocks) > 2 else None
+    elif title_match:
+        title = title_match.group(1).strip(" ,.")
+        authors_text = cleaned[: title_match.start()]
+        venue = cleaned[title_match.end():].lstrip(" ,.")
+    elif year_match and scrub[max(0, year_match.start() - 1):year_match.start()] == "(":
+        authors_text = scrub[: year_match.start()]
+        sentences = [
+            s.strip()
+            for s in re.split(r"\.\s+|\.$", scrub[year_match.end():].lstrip(").,: "))
+            if s.strip()
+        ]
+        title = sentences[0] if sentences else None
+        venue = sentences[1] if len(sentences) > 1 else None
+    elif year_match:
+        authors_text = scrub[: year_match.start()]
+        venue = scrub[year_match.end():].lstrip(",. ")
+
     journal: Optional[str] = None
-    if year_match:
-        after_year = cleaned[year_match.end():].strip().lstrip(",. ")
-        # Take first meaningful chunk
-        journal_match = re.match(r"([^,.\d]{5,})", after_year)
-        if journal_match:
-            journal = journal_match.group(1).strip()
+    if venue:
+        v = re.sub(r"^in\s*:?\s+", "", venue, flags=re.IGNORECASE)
+        journal = re.split(r",|\(|\bvol", v)[0].strip(" .")
+        if len(journal) < 5 or journal[0].isdigit():
+            journal = None
 
     return {
         "citation_key": key,
-        "entry_type": "article",
+        "entry_type": _infer_entry_type(cleaned, venue),
         "title": revtex.get("title") or title,
-        "authors": revtex.get("authors") or authors,
+        "authors": revtex.get("authors") or _split_authors(authors_text),
         "year": revtex.get("year") or year,
         "doi": doi,
         "journal": revtex.get("journal") or journal,

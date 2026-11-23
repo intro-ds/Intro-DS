@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from src.latexParser.standardizer import (
+    _split_authors,
     bibitem_to_bibtex,
     clean_element_content,
     expand_accents,
@@ -167,3 +168,43 @@ def test_extract_bibitems_revtex_bbl() -> None:
     assert first["year"] == 2020
     assert first["journal"] == "Phys. Rev. Lett."
     assert first["authors"] == ["A. Foo", "B. C. Bar"]
+
+def test_bibitem_newblock_natbib_style() -> None:
+    """Test natbib/plain style entries separated by \\newblock."""
+    raw = (
+        "Ashish Vaswani, Noam Shazeer, and Niki Parmar.\n"
+        "\\newblock Attention is all you need.\n"
+        "\\newblock In \\emph{Advances in Neural Information Processing Systems}, "
+        "volume 30, 2017."
+    )
+    e = bibitem_to_bibtex("vaswani", raw)
+    assert e["title"] == "Attention is all you need"
+    assert e["authors"] == ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar"]
+    assert e["year"] == 2017
+    assert e["journal"] == "Advances in Neural Information Processing Systems"
+    assert e["entry_type"] == "inproceedings"
+
+
+def test_bibitem_last_first_apa_style() -> None:
+    """Test "Last, F., Last, G., and Last, H. (year). Title. Venue." entries."""
+    raw = "Vaswani, A., Shazeer, N., and Parmar, N. (2017). Attention is all you need. \\emph{NeurIPS}."
+    e = bibitem_to_bibtex("vaswani", raw)
+    assert e["authors"][0] == "A. Vaswani"
+    assert len(e["authors"]) == 3
+    assert e["year"] == 2017
+    assert e["title"] == "Attention is all you need"
+
+
+def test_bibitem_arxiv_id_becomes_url() -> None:
+    """Test that an arXiv identifier is kept as url and the year is not confused."""
+    raw = "K. He, X. Zhang, S. Ren, and J. Sun. Deep residual learning. arXiv preprint arXiv:1512.03385, 2015."
+    e = bibitem_to_bibtex("he", raw)
+    assert e["url"] == "https://arxiv.org/abs/1512.03385"
+    assert e["year"] == 2015
+    assert e["entry_type"] == "misc"
+
+
+def test_split_authors_formats() -> None:
+    """Test the two common author-list formats."""
+    assert _split_authors("A. B. Foo, C. Bar, and D. Baz") == ["A. B. Foo", "C. Bar", "D. Baz"]
+    assert _split_authors("Foo, A. B. and Bar, C.") == ["A. B. Foo", "C. Bar"]
