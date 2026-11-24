@@ -10,5 +10,6 @@ pyarrow
 matplotlib
 seaborn
 lightgbm
+scikit-learn
 huggingface_hub
 datasets
