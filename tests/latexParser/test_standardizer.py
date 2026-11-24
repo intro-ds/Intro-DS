@@ -302,3 +302,22 @@ def test_extract_bibitems_real_bbl_fixture() -> None:
     assert len(entries) >= 5
     assert all(e["citation_key"] for e in entries)
     assert sum(bool(e["authors"]) and bool(e["year"]) for e in entries) / len(entries) >= 0.8
+
+def test_parse_bib_file_skips_control_entries(tmp_path: Path) -> None:
+    """Test that REVTeX @CONTROL directives are not parsed as references."""
+    bib = tmp_path / "refs.bib"
+    bib.write_text(
+        """
+@CONTROL{REVTEX42Control}
+@CONTROL{apsrev42Control,
+  author="08", editor="1", pages="0", title="0", year="1"}
+@article{einstein1905,
+  author = {Albert Einstein},
+  title = {On the electrodynamics of moving bodies},
+  year = {1905}
+}
+""",
+        encoding="utf-8",
+    )
+    entries = parse_bib_file(bib)
+    assert [e["citation_key"] for e in entries] == ["einstein1905"]

@@ -583,7 +583,7 @@ def parse_bib_file(
 
     for i, m in enumerate(matches):
         entry_type = m.group(1).lower()
-        if entry_type in ("string", "comment", "preamble"):
+        if entry_type in ("string", "comment", "preamble", "control"):
             continue
 
         key = m.group(2).strip()
