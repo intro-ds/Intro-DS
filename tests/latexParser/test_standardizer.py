@@ -321,3 +321,23 @@ def test_parse_bib_file_skips_control_entries(tmp_path: Path) -> None:
     )
     entries = parse_bib_file(bib)
     assert [e["citation_key"] for e in entries] == ["einstein1905"]
+
+def test_revtex_title_with_nested_braces_and_textendash() -> None:
+    """Test a revtex title wrapped in {{...}} with \\textendash{} and a line break."""
+    tex = (
+        "\\begin{thebibliography}{1}\n"
+        "\\bibitem [{\\citenamefont {Roulet}\\ and\\ \\citenamefont {Zaldarriaga}(2019)}]{Roulet:2018jbe}%\n"
+        "  \\BibitemOpen\n"
+        "  \\bibfield  {author} {\\bibinfo {author} {\\bibfnamefont {J.}~\\bibnamefont {Roulet}}\\ and\\ "
+        "\\bibinfo {author} {\\bibfnamefont {M.}~\\bibnamefont {Zaldarriaga}},\\ }"
+        "\\bibfield  {title} {\\bibinfo {title} {{Constraints on\n"
+        "  binary black hole populations from LIGO\\textendash{}Virgo detections}},\\ }"
+        "\\href {https://doi.org/10.1093/mnras/stz226} {\\bibfield  {journal} {\\bibinfo  {journal} "
+        "{Mon. Not. Roy. Astron. Soc.}\\ }\\textbf {\\bibinfo {volume} {484}},\\ "
+        "\\bibinfo {pages} {4216} (\\bibinfo {year} {2019})}\\BibitemShut {NoStop}%\n"
+        "\\end{thebibliography}"
+    )
+    e = extract_bibitems_from_tex(tex)[0]
+    assert e["title"] == "Constraints on binary black hole populations from LIGO\u2013Virgo detections"
+    assert "\n" not in e["title"]
+    assert e["year"] == 2019

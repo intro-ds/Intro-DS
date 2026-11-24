@@ -172,6 +172,8 @@ def _remove_citations(text: str) -> str:
 
 def _normalize_dashes_quotes(text: str) -> str:
     """Normalize LaTeX dashes and quotes to Unicode equivalents."""
+    text = re.sub(r"\\textendash\s*(?:\{\})?", "\u2013", text)
+    text = re.sub(r"\\textemdash\s*(?:\{\})?", "\u2014", text)
     text = text.replace("---", "\u2014")   # em dash
     text = text.replace("--", "\u2013")    # en dash
     text = text.replace("``", "\u201c")    # left double quote
@@ -343,6 +345,27 @@ _BIBNAME_RE = re.compile(
     r"((?:\\bibfnamefont\s*\{[^{}]*\}(?:\s|~|\\ )*)+)\\bibnamefont\s*\{([^{}]*)\}"
 )
 
+def _braced_field(text: str, field: str) -> Optional[str]:
+    """Return the balanced {...} content that follows \\bibinfo {field}.
+
+    Unlike a regex, this handles any nesting depth, e.g.
+    \\bibinfo {title} {{Constraints ... LIGO\\textendash{}Virgo ...}}.
+    """
+    m = re.search(r"\\bibinfo\s*\{" + field + r"\}\s*\{", text)
+    if not m:
+        return None
+    depth, i = 1, m.end()
+    while i < len(text) and depth:
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        i += 1
+    return text[m.end(): i - 1] if depth == 0 else None
 
 def _parse_revtex_bibitem(raw_text: str) -> Dict[str, Any]:
     """Extract title, journal, year and authors from a revtex-style bibitem."""
@@ -351,11 +374,9 @@ def _parse_revtex_bibitem(raw_text: str) -> Dict[str, Any]:
         return result
 
     for field in ("title", "journal", "year"):
-        m = re.search(
-            r"\\bibinfo\s*\{" + field + r"\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}", raw_text
-        )
-        if m:
-            result[field] = clean_element_content(m.group(1), kind="sentence")
+        raw = _braced_field(raw_text, field)
+        if raw is not None:
+            result[field] = " ".join(clean_element_content(raw, kind="sentence").split())
 
     if "year" in result:
         ym = re.search(r"\d{4}", result["year"])
@@ -605,7 +626,7 @@ def parse_bib_file(
                 fm.group(3) if fm.group(3) is not None else fm.group(4)
             )
             if val is not None:
-                cleaned_val = clean_element_content(val, kind="sentence")
+                cleaned_val = " ".join(clean_element_content(val, kind="sentence").split())
                 fields[f_name] = cleaned_val
 
         year: Optional[int] = None
