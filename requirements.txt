@@ -9,3 +9,6 @@ psutil
 pyarrow
 matplotlib
 seaborn
+lightgbm
+huggingface_hub
+datasets
