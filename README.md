@@ -123,3 +123,23 @@ The shared configuration records the arXiv ID ranges assigned to each group memb
 - GitHub repository containing the pipeline source code and documentation.
 - Individual Hugging Face datasets for each member's assigned ID range.
 - Final project poster.
+
+### Milestone 2 — Hierarchical LaTeX & BibTeX Parser
+
+Run the incremental two-pass parser (`src/latexParser/run.py`) to resolve multi-file `\input`/`\include` compilation paths, extract and deduplicate BibTeX entries across versions, rewrite renamed `\cite{}` keys, construct the per-version element hierarchy, and export `data/processed/elements.parquet`, `data/processed/hierarchy.parquet`, and `data/processed/bibtex.parquet`:
+
+```bash
+# Smoke test on the first 20 available papers
+python -m src.latexParser.run --limit 20
+
+# Parse an assigned student range with automatic resume from parse_manifest.csv
+python -m src.latexParser.run --student-id 24127101
+
+# Run in polling mode alongside the crawler as new papers finish downloading
+python -m src.latexParser.run --poll
+
+# Measure end-to-end runtime, RAM, and disk usage for Milestone 2
+python -m src.utils.benchmark --label m2_parser --output-dir data/processed --n-items 5000 -- \
+    python -m src.latexParser.run --student-id 24127101
+
+
