@@ -81,7 +81,7 @@ def shard_table(src: Path, dest_dir: Path, rows_per_shard: int = 500_000, batch_
     return total, len(paths)
 
 
-def build_card(counts: Dict[str, int], metrics: Dict) -> str:
+def build_card(counts: Dict[str, int], metrics: Dict, repo_id: str = "<user>/<repo>") -> str:
     """Dataset card: YAML metadata (configs) + human-readable description."""
     configs = "\n".join(
         f"- config_name: {t}\n  data_files:\n  - split: train\n    path: data/{t}/*.parquet" for t in TABLES
@@ -155,7 +155,7 @@ publications. Test and validation sets each hold 1 manual and 1 automatic public
 
 ```python
 from datasets import load_dataset
-ds = load_dataset("<user>/<repo>", "predictions", split="train", streaming=True)
+ds = load_dataset("{repo_id}", "predictions", split="train", streaming=True)
 print(next(iter(ds)))
 ```
 """
@@ -185,7 +185,7 @@ def export_dataset(
         print(f"{table:12s} rows={total:10,d} shards={shards}")
 
     metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else {}
-    (output_dir / "README.md").write_text(build_card(counts, metrics), encoding="utf-8")
+    (output_dir / "README.md").write_text(build_card(counts, metrics, repo_id), encoding="utf-8")
     return counts
 
 
@@ -197,6 +197,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_PROCESSED_DIR / "hf_dataset")
     parser.add_argument("--metrics", type=Path, default=DEFAULT_OUTPUT_DIR / METRICS_FILE)
     parser.add_argument("--rows-per-shard", type=int, default=500_000)
+    parser.add_argument("--repo-id", default="<user>/<repo>", help="Hub repo id used in the card's usage snippet")
     args = parser.parse_args()
     export_dataset(args.student_id, args.processed_dir, args.output_dir, args.metrics, args.rows_per_shard)
     print(f"\nDataset folder ready: {args.output_dir}")
