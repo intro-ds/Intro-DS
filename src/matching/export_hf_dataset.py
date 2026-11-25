@@ -167,6 +167,7 @@ def export_dataset(
     output_dir: Path,
     metrics_path: Path,
     rows_per_shard: int = 500_000,
+    repo_id: str = "<user>/<repo>",
 ) -> Dict[str, int]:
     """Validate the six tables, shard them and write the dataset card."""
     src_dir = processed_dir / student_id
@@ -199,7 +200,14 @@ def main() -> None:
     parser.add_argument("--rows-per-shard", type=int, default=500_000)
     parser.add_argument("--repo-id", default="<user>/<repo>", help="Hub repo id used in the card's usage snippet")
     args = parser.parse_args()
-    export_dataset(args.student_id, args.processed_dir, args.output_dir, args.metrics, args.rows_per_shard)
+    export_dataset(
+        args.student_id,
+        args.processed_dir,
+        args.output_dir,
+        args.metrics,
+        args.rows_per_shard,
+        args.repo_id,
+    )
     print(f"\nDataset folder ready: {args.output_dir}")
 
 
