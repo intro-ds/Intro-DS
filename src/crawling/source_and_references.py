@@ -564,7 +564,7 @@ def _safe_archive_member(member: tarfile.TarInfo) -> Optional[PurePosixPath]:
         return None
     if ":" in path.parts[0]:
         return None
-    if path.suffix.lower() not in {".tex", ".bib"}:
+    if path.suffix.lower() not in {".tex", ".bib", ".bbl"}:
         return None
     return path
 
@@ -627,6 +627,11 @@ def extract_tex_bib_archive(
                 if relative_path.suffix.lower() == ".tex":
                     tex_count += 1
                 else:
+                    bib_count += 1
+                suffix = relative_path.suffix.lower()
+                if suffix == ".tex":
+                    tex_count += 1
+                elif suffix == ".bib":
                     bib_count += 1
     except tarfile.TarError as error:
         raise ValueError(f"Invalid or unreadable source archive: {error}") from error
