@@ -2,14 +2,14 @@
 
 Usage examples:
   1. One-shot parse of all currently downloaded papers:
-       python3 -m src.latexParser.runner --student-id 24127101
+       python3 -m src.latexParser.run --student-id 24127101
 
   2. Parallel mode (runs alongside the crawler until all assigned papers finish):
-       python3 -m src.latexParser.runner --student-id 24127101 --follow
+       python3 -m src.latexParser.run --student-id 24127101 --follow
 
   3. Measured with the benchmark utility:
        python3 -m src.utils.benchmark --label m2_parser \
-           --output-dir data/processed -- python3 -m src.latexParser.runner --student-id 24127101
+           --output-dir data/processed -- python3 -m src.latexParser.run --student-id 24127101
 """
 from __future__ import annotations
 
@@ -399,7 +399,7 @@ def parse_single_publication(
         rewrite_fn = rewrite_fn or default_rewrite
 
     builder = PublicationHierarchyBuilder(base_id)
-    raw_bibtex_entries: List[dict] = []
+    raw_bibtex_by_version: Dict[int, List[dict]] = {}
     pass1_records: List[dict] = []
 
     for ver in sorted(versions):
@@ -416,7 +416,7 @@ def parse_single_publication(
                     extract_fn, compiled_tex, ver_dir, base_id, ver
                 )
                 ver_raw_entries, ver_raw_count = _normalize_extract_result(raw_res)
-                raw_bibtex_entries.extend(ver_raw_entries)
+                raw_bibtex_by_version[ver] = ver_raw_entries
 
             pass1_records.append({
                 "version": ver,
@@ -444,7 +444,7 @@ def parse_single_publication(
     key_map: Dict[str, str] = {}
     dedup_error = ""
     try:
-        dedup_res = _call_dedup_bibtex(dedup_fn, raw_bibtex_entries, base_id)
+        dedup_res = _call_dedup_bibtex(dedup_fn, raw_bibtex_by_version, base_id)
         bibtex_rows, key_map = _normalize_dedup_result(dedup_res, base_id)
     except Exception as exc:
         dedup_error = str(exc)
