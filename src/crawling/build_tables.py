@@ -9,7 +9,7 @@ import re
 import tempfile
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Union
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -79,16 +79,28 @@ def _base_and_version(identifier: str) -> tuple[str, int]:
     return identifier[:match.start()], int(match.group(1))
 
 
+def _metadata_paths(
+    metadata_paths: Union[Path, Iterable[Path]],
+) -> List[Path]:
+    if isinstance(metadata_paths, (str, Path)):
+        return [Path(metadata_paths)]
+    paths = [Path(path) for path in metadata_paths]
+    if not paths:
+        raise ValueError("At least one metadata file is required")
+    return paths
+
+
 def _paper_rows(
-    base_ids: Iterable[str], metadata_path: Path
+    base_ids: Iterable[str], metadata_paths: Iterable[Path]
 ) -> List[dict]:
     by_base: Dict[str, List[dict]] = defaultdict(list)
-    for record in _read_jsonl(metadata_path):
-        identifier = record.get("id")
-        if not identifier:
-            continue
-        base_id, version = _base_and_version(identifier)
-        by_base[base_id].append((version, record))
+    for metadata_path in metadata_paths:
+        for record in _read_jsonl(metadata_path):
+            identifier = record.get("id")
+            if not identifier:
+                continue
+            base_id, version = _base_and_version(identifier)
+            by_base[base_id].append((version, record))
 
     rows = []
     for base_id in base_ids:
@@ -211,7 +223,7 @@ def _write_csv_atomic(rows: List[dict], fields: List[str], path: Path) -> None:
 
 
 def _crawl_manifest_rows(
-    base_ids: Iterable[str], metadata_path: Path
+    base_ids: Iterable[str], metadata_paths: Iterable[Path]
 ) -> List[dict]:
     histories = _history_records(base_ids)
     discovery = _read_csv_latest(DISCOVERY_MANIFEST, ["base_id"])
@@ -221,12 +233,13 @@ def _crawl_manifest_rows(
 
     metadata_records = {}
     metadata_versions: Dict[str, List[str]] = defaultdict(list)
-    for record in _read_jsonl(metadata_path):
-        identifier = record.get("id")
-        if identifier:
-            metadata_records[identifier] = record
-            base_id, _ = _base_and_version(identifier)
-            metadata_versions[base_id].append(identifier)
+    for metadata_path in metadata_paths:
+        for record in _read_jsonl(metadata_path):
+            identifier = record.get("id")
+            if identifier:
+                metadata_records[identifier] = record
+                base_id, _ = _base_and_version(identifier)
+                metadata_versions[base_id].append(identifier)
 
     rows = []
     for base_id in base_ids:
@@ -326,18 +339,19 @@ def _write_parquet_atomic(rows: List[dict], schema: pa.Schema, path: Path) -> No
 
 def build_tables(
     config_path: Path,
-    metadata_path: Path,
+    metadata_path: Union[Path, Iterable[Path]],
     reference_dir: Path,
     papers_path: Path,
     references_path: Path,
     crawl_manifest_path: Optional[Path] = None,
 ) -> tuple[int, int, int]:
     base_ids = assigned_base_ids(config_path)
-    paper_rows = _paper_rows(base_ids, metadata_path)
+    metadata_paths = _metadata_paths(metadata_path)
+    paper_rows = _paper_rows(base_ids, metadata_paths)
     reference_rows = _reference_rows(reference_dir)
     _write_parquet_atomic(paper_rows, PAPERS_SCHEMA, papers_path)
     _write_parquet_atomic(reference_rows, REFERENCES_SCHEMA, references_path)
-    manifest_rows = _crawl_manifest_rows(base_ids, metadata_path)
+    manifest_rows = _crawl_manifest_rows(base_ids, metadata_paths)
     if crawl_manifest_path is not None:
         _write_csv_atomic(manifest_rows, CRAWL_MANIFEST_FIELDS, crawl_manifest_path)
     return len(paper_rows), len(reference_rows), len(manifest_rows)
@@ -348,7 +362,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Build Milestone 1 papers and references Parquet tables."
     )
     parser.add_argument("--config", type=Path, default=ROOT / "config" / "aXirPaperID")
-    parser.add_argument("--metadata", type=Path, default=METADATA_FILE)
+    parser.add_argument(
+        "--metadata", type=Path, action="append",
+        help="Metadata JSONL input; repeat to combine member corpora.",
+    )
     parser.add_argument("--semantic-scholar-dir", type=Path, default=SEMANTIC_SCHOLAR_DIR)
     parser.add_argument("--papers-output", type=Path, default=PAPERS_PATH)
     parser.add_argument("--references-output", type=Path, default=REFERENCES_PATH)
@@ -357,7 +374,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     papers, references, manifest_rows = build_tables(
         args.config,
-        args.metadata,
+        args.metadata or [METADATA_FILE],
         args.semantic_scholar_dir,
         args.papers_output,
         args.references_output,
