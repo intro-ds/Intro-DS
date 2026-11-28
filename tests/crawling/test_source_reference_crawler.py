@@ -1,4 +1,5 @@
 import csv
+import gzip
 import io
 import json
 import sys
@@ -7,6 +8,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 import src.crawling.source_and_references as crawler
 import src.crawling.build_tables as table_builder
@@ -89,7 +91,7 @@ class _UnusedMetadataClient:
 
 
 def test_assignment_config_contains_25000_unique_ids():
-    ids = assigned_base_ids(Path(__file__).parents[1] / "config" / "aXirPaperID")
+    ids = assigned_base_ids(Path(__file__).parents[2] / "config" / "aXirPaperID")
     assert len(ids) == 25_000
     assert len(set(ids)) == 25_000
     assert "2602.19869" in ids
@@ -401,7 +403,7 @@ def test_main_runs_semantic_scholar_concurrently_with_arxiv_stages(monkeypatch, 
         print("arXiv: active")
         return {"2603.10580": ["2603.10580v1"]}
 
-    monkeypatch.setattr(crawler, "assigned_base_ids", lambda: ["2603.10580"])
+    monkeypatch.setattr(crawler, "assigned_base_ids", lambda student_id=None: ["2603.10580"])
     monkeypatch.setattr(crawler, "_load_histories", lambda ids: {})
     monkeypatch.setattr(crawler, "crawl_semantic_scholar", fake_s2)
     monkeypatch.setattr(crawler, "discover_assigned_versions", fake_discover)
@@ -564,3 +566,31 @@ def test_paper_rows_combines_multiple_metadata_files(tmp_path):
     )
 
     assert [row["arxiv_id"] for row in rows] == ["2603.10580", "2602.16789"]
+
+def test_assigned_base_ids_filters_by_student_id():
+    config = Path(__file__).parents[2] / "config" / "aXirPaperID"
+    ids = assigned_base_ids(config, student_id="24127590")
+    assert len(ids) == 5_000
+    assert ids[0] == "2511.16709"
+    assert ids[-1] == "2511.21708"
+    with pytest.raises(ValueError, match="not found"):
+        assigned_base_ids(config, student_id="00000000")
+
+LATEX = rb"\documentclass{article}\begin{document}Hi\end{document}"
+
+
+def test_extract_archive_keeps_single_gzipped_tex(tmp_path):
+    counts = extract_tex_bib_archive(io.BytesIO(gzip.compress(LATEX)), tmp_path / "v1")
+    assert counts == (1, 0, len(LATEX), len(LATEX))
+    assert (tmp_path / "v1" / "main.tex").read_bytes() == LATEX
+
+
+def test_extract_archive_keeps_single_plain_tex(tmp_path):
+    counts = extract_tex_bib_archive(io.BytesIO(LATEX), tmp_path / "v1")
+    assert counts[:2] == (1, 0)
+    assert (tmp_path / "v1" / "main.tex").exists()
+
+
+def test_extract_archive_rejects_pdf_payload(tmp_path):
+    with pytest.raises(ValueError):
+        extract_tex_bib_archive(io.BytesIO(b"%PDF-1.5 binary"), tmp_path / "v1")
