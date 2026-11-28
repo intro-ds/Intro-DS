@@ -20,7 +20,7 @@ class LatexFileResolver:
 
     # Regex nhận diện \input{...}, \include{...}, \subfile{...} và cả cú pháp TeX cổ \input filename
     INCLUDE_PATTERN = re.compile(
-        r"\\(?:input|include|subfile)\s*(?:\{\s*([^}]+?)\s*\}|([^\s%{}]+))"
+        r"\\(?:input|include|subfile)(?![A-Za-z@])\s*(?:\{\s*([^}]+?)\s*\}|([^\s%{}]+))"
     )
 
     def __init__(self, strip_comments: bool = True):
@@ -63,53 +63,63 @@ class LatexFileResolver:
                 continue
         return file_path.read_text(encoding="utf-8", errors="ignore")
 
+    def _is_binary(path: Path) -> bool:
+        """True for PDFs or other binaries disguised as .tex files."""
+        try:
+            with path.open("rb") as f:
+                header = f.read(1024)
+        except OSError:
+            return True
+        return header.startswith(b"%PDF-") or b"\x00" in header
+
     def find_root_tex_file(self, version_dir: Path) -> Optional[Path]:
-        """
-        Tìm file .tex gốc chứa khai báo \\documentclass (không nằm trong comment).
-        Nếu có nhiều file chứa \\documentclass (ví dụ có file rebuttal/supplement),
-        ưu tiên file có chứa \\begin{document} và có tên chuẩn (main.tex, paper.tex, ms.tex)
-        hoặc kích thước lớn nhất.
-        """
+        """Pick the compilation root: the .tex with \\documentclass that is best
+        by (1) not being \\input/\\include'd by another file, (2) matching a
+        compiled .bbl stem or a typical name such as main/paper, (3) sitting in
+        the top folder, (4) having \\end{document}, (5) being the largest.
+        Binary files disguised as .tex are ignored."""
         if not version_dir.exists() or not version_dir.is_dir():
             return None
 
-        tex_files = list(version_dir.rglob("*.tex"))
-        if not tex_files:
+        sources: Dict[Path, str] = {}
+        for tex_file in sorted(version_dir.rglob("*.tex")):
+            if self._is_binary(tex_file):
+                continue
+            sources[tex_file] = self.remove_comments(self.read_tex_file(tex_file))
+        if not sources:
             return None
 
-        candidates: List[Tuple[int, int, Path]] = []
-        priority_names = {"main.tex", "paper.tex", "ms.tex", "article.tex", "root.tex"}
-
-        for tex_file in tex_files:
-            raw_content = self.read_tex_file(tex_file)
-            uncommented = self.remove_comments(raw_content)
-
-            if self.DOCUMENTCLASS_PATTERN.search(uncommented):
-                has_begin_doc = 1 if r"\begin{document}" in uncommented else 0
-                is_priority_name = 1 if tex_file.name.lower() in priority_names else 0
-                file_size = len(uncommented)
-                # Sắp xếp ưu tiên: có \begin{document} -> nằm ở thư mục gốc -> tên ưu tiên -> độ dài
-                is_top_level = 1 if tex_file.parent == version_dir else 0
-                score = (
-                    has_begin_doc * 1000
-                    + is_top_level * 100
-                    + is_priority_name * 10
-                )
-                candidates.append((score, file_size, tex_file))
-
-        if not candidates:
-            # Fallback hiếm gặp: nếu tác giả dùng file định nghĩa macro riêng bọc \documentclass
-            # thì chọn file có \begin{document}
-            for tex_file in tex_files:
-                uncommented = self.remove_comments(self.read_tex_file(tex_file))
-                if r"\begin{document}" in uncommented:
-                    candidates.append((1, len(uncommented), tex_file))
-
-        if not candidates:
+        with_class = [p for p, s in sources.items() if self.DOCUMENTCLASS_PATTERN.search(s)]
+        if not with_class:  # rare: macro-wrapped \documentclass
+            with_class = [p for p, s in sources.items() if r"\begin{document}" in s]
+        if not with_class:
             return None
+        with_body = [p for p in with_class if r"\begin{document}" in sources[p]]
+        candidates = with_body or with_class
 
-        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return candidates[0][2]
+        included_refs: Set[str] = set()
+        for text in sources.values():
+            for m in self.INCLUDE_PATTERN.finditer(text):
+                ref = Path((m.group(1) or m.group(2)).strip()).name
+                included_refs.add(ref)
+                included_refs.add(Path(ref).stem)
+
+        bbl_stems = {p.stem for p in version_dir.rglob("*.bbl")}
+        typical_stems = {"main", "paper", "ms", "article", "root"}
+
+        def score(path: Path) -> tuple:
+            text = sources[path]
+            is_included = path.name in included_refs or path.stem in included_refs
+            hints = int(path.stem in bbl_stems) + int(path.stem.lower() in typical_stems)
+            return (
+                not is_included,
+                hints,
+                path.parent == version_dir,
+                r"\end{document}" in text,
+                len(text),
+            )
+
+        return max(candidates, key=score)
 
     @staticmethod
     def _resolve_target_path(
@@ -143,6 +153,16 @@ class LatexFileResolver:
                     # Chỉ ghép nội dung các file .tex (không nhúng nội dung file .bbl hoặc .sty vào cây văn bản)
                     if candidate_path.suffix.lower() == ".tex":
                         return candidate_path
+        # Fallback: archives flattened at extraction time lose their folders,
+        # so look the file up by base name anywhere under the root folder.
+        basename = Path(target_ref).name
+        if not basename:
+            return None
+        names = [basename] if basename.endswith(".tex") else [basename, f"{basename}.tex"]
+        for name in names:
+            for found in sorted(root_dir.rglob(name)):
+                if found.is_file() and found.suffix.lower() == ".tex":
+                    return found.resolve()
         return None
 
     def resolve_version(self, version_dir: Path) -> Dict[str, object]:
