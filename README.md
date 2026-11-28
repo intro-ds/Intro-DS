@@ -94,6 +94,20 @@ background thread while the arXiv stages run. For a small smoke run, add
 python -m src.crawling.source_and_references --discover --metadata --source --semantic-scholar --limit 20
 ```
 
+Each member crawls only their own range with `--student-id` (see `config/aXirPaperID`).
+Existing `arxiv_history_*.jsonl` and `arxiv_metadata_*_all_versions.jsonl` files are
+reused if copied anywhere under `data/raw/`:
+
+```bash
+python -m src.crawling.source_and_references --discover --metadata --source --semantic-scholar --student-id 24127590
+python -m src.crawling.build_tables --student-id 24127590
+python -m src.utils.generate_report_stats --student-id 24127590 \
+    --output-json data/processed/crawl_stats.json --problems-csv data/raw/problem_versions.csv
+```
+
+Versions recorded as `non_archive` or `error` are retried automatically when the
+`--source` stage is run again. Single-file `.tex` submissions are stored as `main.tex`.
+
 By default, arXiv and Semantic Scholar requests are paced at 3.1 seconds per
 request. To request a Semantic Scholar API key, use the
 [Semantic Scholar API key form](https://www.semanticscholar.org/product/api#api-key-form).
