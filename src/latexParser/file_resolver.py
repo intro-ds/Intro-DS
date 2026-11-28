@@ -63,6 +63,7 @@ class LatexFileResolver:
                 continue
         return file_path.read_text(encoding="utf-8", errors="ignore")
 
+    @staticmethod
     def _is_binary(path: Path) -> bool:
         """True for PDFs or other binaries disguised as .tex files."""
         try:

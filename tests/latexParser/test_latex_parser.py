@@ -84,6 +84,7 @@ def test_run_parser_two_pass_and_statuses(tmp_path: Path):
         writer.writerow({"arxiv_id": "2607.23695", "version": "1", "status": "no_source"})
 
     import src.latexParser.run as run_mod
+    orig_hooks = run_mod._resolve_bibtex_hooks
 
     history_file = tmp_path / "arxiv_history_all_assignments.jsonl"
     history_file.write_text(
@@ -137,6 +138,7 @@ def test_run_parser_two_pass_and_statuses(tmp_path: Path):
     finally:
         run_mod.DISCOVERY_FILE = orig_discovery
         run_mod.RAW_DIR = orig_raw
+        run_mod._resolve_bibtex_hooks = orig_hooks
 
     assert processed == 2
     bib_table = pq.read_table(out_dir / "bibtex.parquet")
