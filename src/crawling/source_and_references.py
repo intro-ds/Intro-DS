@@ -596,7 +596,16 @@ def extract_tex_bib_archive(
     try:
         tar = tarfile.open(fileobj=archive, mode="r:*")
     except tarfile.TarError as error:
-        raise ValueError(f"Response is not a readable tar archive: {error}") from error
+        # Single-file submissions are served without a tar wrapper (gzipped or plain).
+        archive.seek(0)
+        raw = archive.read()
+        payload = _single_tex_payload(raw)
+        if payload is None:
+            raise ValueError(
+                f"Response is not a readable tar archive: {error}"
+            ) from error
+        (destination / "main.tex").write_bytes(payload)
+        return 1, 0, len(payload), len(payload)
     try:
         with tar:
             seen_paths = set()

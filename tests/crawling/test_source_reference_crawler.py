@@ -91,7 +91,7 @@ class _UnusedMetadataClient:
 
 
 def test_assignment_config_contains_25000_unique_ids():
-    ids = assigned_base_ids(Path(__file__).parents[1] / "config" / "aXirPaperID")
+    ids = assigned_base_ids(Path(__file__).parents[2] / "config" / "aXirPaperID")
     assert len(ids) == 25_000
     assert len(set(ids)) == 25_000
     assert "2602.19869" in ids
@@ -568,7 +568,7 @@ def test_paper_rows_combines_multiple_metadata_files(tmp_path):
     assert [row["arxiv_id"] for row in rows] == ["2603.10580", "2602.16789"]
 
 def test_assigned_base_ids_filters_by_student_id():
-    config = Path(__file__).parents[1] / "config" / "aXirPaperID"
+    config = Path(__file__).parents[2] / "config" / "aXirPaperID"
     ids = assigned_base_ids(config, student_id="24127590")
     assert len(ids) == 5_000
     assert ids[0] == "2511.16709"
