@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 _CITE_COMMAND = re.compile(
@@ -32,7 +32,7 @@ def _title_year(entry: Mapping[str, object]) -> Tuple[str, str]:
 
 def dedup_bibtex(
     entries_by_version: Mapping[int, Iterable[Mapping[str, object]]],
-) -> Tuple[List[Dict[str, str]], Dict[str, str]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """Unify BibTeX entries across versions and return entries plus old-to-canonical keys.
 
     Versions are processed in ascending order, preserving entry order within each
@@ -46,8 +46,11 @@ def dedup_bibtex(
     non-whitespace characters wins; ties keep the value from the earliest
     version, then earliest entry order. `citation_key` is always set to the
     group's canonical key.
+
+    A reused citation key always joins its existing group unless the DOIs conflict, 
+    in which case the later entry gets a unique key such as key_2.
     """
-    groups: List[Dict[str, object]] = []
+    groups: List[Dict[str, Any]] = []
     key_map: Dict[str, str] = {}
 
     for version in sorted(entries_by_version):
@@ -58,33 +61,35 @@ def dedup_bibtex(
 
             doi = _normalize_doi(entry.get("doi"))
             title_year = _title_year(entry)
-            compatible_groups: List[Dict[str, object]] = []
+            compatible: List[Dict[str, Any]] = []
 
-            for group in groups:
-                group_doi = group["doi"]
+            for candidate in groups:
+                group_doi = candidate["doi"]
                 if doi and group_doi:
                     if doi == group_doi:
-                        compatible_groups.append(group)
+                        compatible.append(candidate)
                     continue
-                if title_year[0] and title_year[1] and title_year == group["title_year"]:
-                    compatible_groups.append(group)
+                same_key = citation_key in candidate["keys"]
+                same_title_year = bool(
+                    title_year[0] and title_year[1] and title_year == candidate["title_year"]
+                )
+                if same_key or same_title_year:
+                    compatible.append(candidate)
 
-            if len(compatible_groups) > 1:
-                # Ambiguous title/year matches must not collapse entries carrying
-                # distinct DOI identities.
-                group = None
-            else:
-                group = compatible_groups[0] if compatible_groups else None
+            if len(compatible) > 1:
+                # Ambiguous: only trust a unique group that already used this key
+                same_key_groups = [g for g in compatible if citation_key in g["keys"]]
+                compatible = same_key_groups if len(same_key_groups) == 1 else []
+            group = compatible[0] if compatible else None
 
             if group is None:
-                if any(
-                    existing["canonical_key"] == citation_key for existing in groups
-                ):
-                    raise ValueError(
-                        f"Citation key {citation_key!r} identifies distinct references"
-                    )
+                used = {str(g["canonical_key"]) for g in groups}
+                canonical_key, suffix = citation_key, 2
+                while canonical_key in used:
+                    canonical_key, suffix = f"{citation_key}_{suffix}", suffix + 1
                 group = {
-                    "canonical_key": citation_key,
+                    "canonical_key": canonical_key,
+                    "keys": set(),
                     "doi": doi,
                     "title_year": title_year,
                     "fields": {},
@@ -92,36 +97,33 @@ def dedup_bibtex(
                 }
                 groups.append(group)
 
-            mapped_key = key_map.get(citation_key)
-            canonical_key = str(group["canonical_key"])
-            if mapped_key is not None and mapped_key != canonical_key:
-                raise ValueError(
-                    f"Citation key {citation_key!r} identifies distinct references"
-                )
-
+            group["keys"].add(citation_key)
             if doi and not group["doi"]:
                 group["doi"] = doi
-            fields = group["fields"]
-            priorities = group["field_priority"]
+
+            fields, priorities = group["fields"], group["field_priority"]
             for field, raw_value in entry.items():
                 if field == "citation_key" or raw_value is None:
                     continue
-                value = str(raw_value).strip()
+                if isinstance(raw_value, (list, tuple)):  # e.g. authors
+                    value: Any = [str(v).strip() for v in raw_value if str(v).strip()]
+                    size = sum(len(v) for v in value)
+                else:
+                    value = str(raw_value).strip()
+                    size = len(value)
                 if not value:
                     continue
-                priority = (len(value), -version)
+                priority = (size, -version)
                 if field not in fields or priority > priorities[field]:
                     fields[field] = value
                     priorities[field] = priority
             group["title_year"] = _title_year(fields)
+            key_map.setdefault(citation_key, str(group["canonical_key"]))
 
-            key_map[citation_key] = canonical_key
-
-    unified: List[Dict[str, str]] = []
+    unified: List[Dict[str, Any]] = []
     for group in groups:
-        canonical_key = str(group["canonical_key"])
         unified_entry = dict(group["fields"])
-        unified_entry["citation_key"] = canonical_key
+        unified_entry["citation_key"] = str(group["canonical_key"])
         unified.append(unified_entry)
 
     return unified, key_map
