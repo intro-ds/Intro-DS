@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 from concurrent.futures import ThreadPoolExecutor
+import gzip
 import io
 import json
 import os
@@ -45,11 +46,21 @@ RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 VERSION_PATTERN = re.compile(r"^(?P<base>.+)v(?P<version>\d+)$")
 
 
-def assigned_base_ids(config_path: Path = CONFIG_PATH) -> List[str]:
-    """Return unique base IDs listed in the group's assignment CSV."""
+def assigned_base_ids(
+    config_path: Path = CONFIG_PATH, student_id: Optional[str] = None
+) -> List[str]:
+    """Return unique base IDs listed in the group's assignment CSV.
+
+    With student_id (e.g. "24127590") only that member's range is returned;
+    without it, the ranges of all members are returned.
+    """
     identifiers = []
+    matched_rows = 0
     with Path(config_path).open("r", encoding="utf-8-sig", newline="") as file:
         for row in csv.DictReader(file):
+            if student_id and row.get("student_id") != student_id:
+                continue
+            matched_rows += 1
             start_month = row["start_month"].replace("-", "")
             end_month = row["end_month"].replace("-", "")
             if start_month != end_month:
@@ -64,6 +75,8 @@ def assigned_base_ids(config_path: Path = CONFIG_PATH) -> List[str]:
                 f"{prefix}.{number:05d}"
                 for number in range(start_id, end_id + 1)
             )
+    if student_id and not matched_rows:
+        raise ValueError(f"student_id {student_id!r} not found in {config_path}")
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("The assignment file contains overlapping ID ranges.")
     return identifiers
@@ -555,6 +568,23 @@ def _safe_archive_member(member: tarfile.TarInfo) -> Optional[PurePosixPath]:
         return None
     return path
 
+_SINGLE_FILE_MARKERS = (b"\\documentclass", b"\\begin{document}", b"\\documentstyle")
+
+
+def _single_tex_payload(data: bytes) -> Optional[bytes]:
+    """Return the LaTeX bytes if data is a lone (optionally gzipped) .tex file.
+
+    arXiv serves single-file submissions without a tar wrapper, either gzipped
+    or already decoded by HTTP. PDF-only submissions return None.
+    """
+    if data[:2] == b"\x1f\x8b":
+        try:
+            data = gzip.decompress(data)
+        except (OSError, EOFError):
+            return None
+    if data.startswith(b"%PDF-") or b"\x00" in data[:1024]:
+        return None
+    return data if any(marker in data for marker in _SINGLE_FILE_MARKERS) else None
 
 def extract_tex_bib_archive(
     archive: io.BufferedIOBase, destination: Path
@@ -869,6 +899,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--source", action="store_true", help="download all version source archives")
     parser.add_argument("--semantic-scholar", action="store_true", help="crawl references once per paper")
     parser.add_argument("--limit", type=int, help="process only the first N assigned papers (for testing)")
+    parser.add_argument(
+        "--student-id",
+        help="process only this member's assigned range (e.g. 24127590); default: all members",
+    )
     args = parser.parse_args(argv)
     if not (args.discover or args.metadata or args.source or args.semantic_scholar):
         parser.error(
@@ -878,7 +912,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
 
-    base_ids = assigned_base_ids()
+    base_ids = assigned_base_ids(student_id=args.student_id)
     if args.limit:
         base_ids = base_ids[:args.limit]
 

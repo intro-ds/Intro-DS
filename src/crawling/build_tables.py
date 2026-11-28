@@ -136,7 +136,7 @@ def _paper_rows(
     return rows
 
 
-def _reference_rows(reference_dir: Path) -> List[dict]:
+def _reference_rows(reference_dir: Path, wanted: Optional[set] = None) -> List[dict]:
     rows = []
     for path in sorted(Path(reference_dir).glob("*.json")):
         try:
@@ -144,6 +144,8 @@ def _reference_rows(reference_dir: Path) -> List[dict]:
         except json.JSONDecodeError as error:
             raise ValueError(f"Invalid Semantic Scholar JSON: {path}") from error
         citing_id = payload.get("arxiv_id", path.stem)
+        if wanted is not None and citing_id not in wanted:
+            continue
         for reference in payload.get("references") or []:
             if not isinstance(reference, dict):
                 raise ValueError(f"Invalid reference record in {path}")
@@ -344,11 +346,12 @@ def build_tables(
     papers_path: Path,
     references_path: Path,
     crawl_manifest_path: Optional[Path] = None,
+    student_id: Optional[str] = None,
 ) -> tuple[int, int, int]:
-    base_ids = assigned_base_ids(config_path)
+    base_ids = assigned_base_ids(config_path, student_id)
     metadata_paths = _metadata_paths(metadata_path)
     paper_rows = _paper_rows(base_ids, metadata_paths)
-    reference_rows = _reference_rows(reference_dir)
+    reference_rows = _reference_rows(reference_dir, set(base_ids))
     _write_parquet_atomic(paper_rows, PAPERS_SCHEMA, papers_path)
     _write_parquet_atomic(reference_rows, REFERENCES_SCHEMA, references_path)
     manifest_rows = _crawl_manifest_rows(base_ids, metadata_paths)
@@ -370,6 +373,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--papers-output", type=Path, default=PAPERS_PATH)
     parser.add_argument("--references-output", type=Path, default=REFERENCES_PATH)
     parser.add_argument("--manifest-output", type=Path, default=CRAWL_MANIFEST_PATH)
+    parser.add_argument("--student-id", help="process only this member's assigned range (e.g. 24127590); default: all members")
     args = parser.parse_args(argv)
 
     papers, references, manifest_rows = build_tables(
@@ -379,6 +383,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.papers_output,
         args.references_output,
         args.manifest_output,
+        student_id=args.student_id,
     )
     print(f"papers: {papers:,} rows -> {args.papers_output}")
     print(f"references: {references:,} rows -> {args.references_output}")
