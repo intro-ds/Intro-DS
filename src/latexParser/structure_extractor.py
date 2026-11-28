@@ -59,7 +59,8 @@ class PublicationHierarchyBuilder:
 
         self.pub_key = arxiv_id.replace(".", "-").replace("/", "-")
 
-        self._dedup_lookup: Dict[Tuple[str, str], str] = {}
+        self._dedup_lookup: Dict[Tuple[str, str, int], str] = {}
+        self._occurrence_counts: Dict[Tuple[str, str], int] = {}
         self.elements_rows: List[Dict[str, str]] = []
         self.hierarchy_rows: List[Dict[str, object]] = []
 
@@ -82,7 +83,11 @@ class PublicationHierarchyBuilder:
 
     def _get_or_create_element(self, kind: str, content: str) -> str:
 
-        key = (kind, content)
+        occurrence_key = (kind, content)
+        occurrence = self._occurrence_counts.get(occurrence_key, 0) + 1
+        self._occurrence_counts[occurrence_key] = occurrence
+
+        key = (kind, content, occurrence)
         if key in self._dedup_lookup:
             return self._dedup_lookup[key]
 
@@ -100,6 +105,62 @@ class PublicationHierarchyBuilder:
             }
         )
         return element_id
+
+    @classmethod
+    def _find_list_end(
+        cls, text: str, opening_end: int, opening_env: str
+    ) -> Tuple[int, int]:
+        boundary_pattern = re.compile(
+            rf"\\(?P<action>begin|end)\{{(?P<env>{cls.LIST_ENV_NAMES})\}}"
+        )
+        environment_stack = [opening_env]
+
+        for match in boundary_pattern.finditer(text, opening_end):
+            if match.group("action") == "begin":
+                environment_stack.append(match.group("env"))
+                continue
+
+            if environment_stack[-1] != match.group("env"):
+                raise ValueError(
+                    f"Mismatched list environment: expected "
+                    f"\\end{{{environment_stack[-1]}}}, found "
+                    f"\\end{{{match.group('env')}}}"
+                )
+            environment_stack.pop()
+            if not environment_stack:
+                return match.start(), match.end()
+
+        raise ValueError(f"Unclosed list environment: \\begin{{{opening_env}}}")
+
+    @classmethod
+    def _split_list_items(cls, inner_list: str) -> List[str]:
+        token_pattern = re.compile(
+            rf"\\(?P<action>begin|end)\{{(?P<env>{cls.LIST_ENV_NAMES})\}}"
+            r"|\\item(?:\s*\[[^\]]*\])?"
+        )
+        environment_stack: List[str] = []
+        item_starts: List[int] = []
+        item_ends: List[int] = []
+
+        for match in token_pattern.finditer(inner_list):
+            token = match.group(0)
+            if match.group("action") == "begin":
+                environment_stack.append(match.group("env"))
+            elif match.group("action") == "end":
+                if not environment_stack or environment_stack[-1] != match.group("env"):
+                    raise ValueError(
+                        f"Mismatched list environment: "
+                        f"\\end{{{match.group('env')}}}"
+                    )
+                environment_stack.pop()
+            elif not environment_stack:
+                item_starts.append(match.start())
+                item_ends.append(match.end())
+
+        return [
+            inner_list[start:end]
+            for start, end in zip(item_ends, item_starts[1:] + [len(inner_list)])
+        ]
 
     def _add_edge(self, version: int, element_id: str, parent_id: str) -> None:
         self.hierarchy_rows.append(
@@ -255,7 +316,7 @@ class PublicationHierarchyBuilder:
     ) -> None:
 
         token_pattern = re.compile(
-            rf"(?P<list>\\begin\{{(?P<list_env>{self.LIST_ENV_NAMES})\}}.*?\\end\{{(?P=list_env)\}})"
+            rf"(?P<list>\\begin\{{(?P<list_env>{self.LIST_ENV_NAMES})\}})"
             rf"|(?P<figure>\\begin\{{(?P<fig_env>{self.FIGURE_ENV_NAMES})\}}.*?\\end\{{(?P=fig_env)\}})"
             rf"|(?P<math>\\begin\{{(?P<math_env>{self.BLOCK_MATH_ENV_NAMES})\}}.*?\\end\{{(?P=math_env)\}}"
             rf"|\$\$.*?\$\$|\\\[.*?\\\])",
@@ -263,7 +324,7 @@ class PublicationHierarchyBuilder:
         )
 
         pos = 0
-        for match in token_pattern.finditer(text_block):
+        while match := token_pattern.search(text_block, pos):
             # 1. Xử lý phần văn bản prose nằm trước khối đặc biệt
             prose_before = text_block[pos : match.start()]
             for sent in self.split_into_sentences(prose_before):
@@ -272,20 +333,21 @@ class PublicationHierarchyBuilder:
 
             # 2. Xử lý khối đặc biệt tìm được
             if match.group("list"):
-                list_raw = match.group("list")
+                list_end_start, list_end = self._find_list_end(
+                    text_block, match.end(), match.group("list_env")
+                )
+                list_raw = text_block[match.start() : list_end]
                 list_clean = self.clean_latex_text(list_raw)
                 list_id = self._get_or_create_element("itemize", list_clean)
                 self._add_edge(version, list_id, parent_id)
 
-                # Bóc phần ruột của môi trường danh sách và tách theo \item
-                inner_list = re.sub(
-                    rf"^\\begin\{{({self.LIST_ENV_NAMES})\}}(?:\[[^\]]*\])?(.*)\\end\{{\1\}}$",
-                    r"\2",
-                    list_raw.strip(),
-                    flags=re.DOTALL,
+                options = re.match(
+                    r"\s*(?:\[[^\]]*\])?",
+                    text_block[match.end() : list_end_start],
                 )
-                items = re.split(r"\\item(?:\s*\[[^\]]*\])?", inner_list)
-                for item_chunk in items[1:]:  # Bỏ phần rỗng trước \item đầu tiên
+                inner_start = match.end() + options.end()
+                inner_list = text_block[inner_start:list_end_start]
+                for item_chunk in self._split_list_items(inner_list):
                     item_clean = self.clean_latex_text(item_chunk)
                     if not item_clean:
                         continue
@@ -305,7 +367,7 @@ class PublicationHierarchyBuilder:
                 math_id = self._get_or_create_element("block_formula", norm_math)
                 self._add_edge(version, math_id, parent_id)
 
-            pos = match.end()
+            pos = list_end if match.group("list") else match.end()
 
 
         remaining_prose = text_block[pos:]
@@ -321,6 +383,7 @@ class PublicationHierarchyBuilder:
         Returns:
             root_id của version này (ví dụ '2310-12345#root1'), hoặc None nếu version rỗng.
         """
+        self._occurrence_counts = {}
         if not compiled_tex or not compiled_tex.strip():
             return None
 
