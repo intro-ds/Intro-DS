@@ -8,3 +8,4 @@ pyarrow
 matplotlib
 psutil
 jupyter-book<2
+rapidfuzz
